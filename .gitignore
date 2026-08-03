@@ -1,0 +1,25 @@
+# 构建产物
+*.exe
+*.exe~
+*.dll
+*.syso
+
+# Go 测试/缓存
+*.test
+*.out
+coverage.txt
+
+# IDE/编辑器
+.vscode/
+.idea/
+*.swp
+
+# 日志
+*.log
+
+# 临时文件
+check_test_main.go
+*_main.go.tmp
+
+# ZCode 会话文件
+.zcode/
