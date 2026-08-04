@@ -1,59 +1,66 @@
 package core
 
 import (
-	"sort"
 	"testing"
-
-	psnet "github.com/shirou/gopsutil/v4/net"
 )
 
-// TestEnumerateMatchesGopsutil 步骤 3 核心对照验证：
-// 原生 GetExtendedTcpTable/UDP 枚举出的连接集合必须与 gopsutil 高度一致。
-//
-// 用连接指纹（协议+本地地址+端口+远端+PID+State）做集合对比，不看顺序。
-// 端口表在两次调用间可能有瞬态变化，允许少量差异，但核心应匹配。
-// 这是审查 Issue 2/3/4（字段映射）的最强验证。
-func TestEnumerateMatchesGopsutil(t *testing.T) {
-	ours, err := ListConnections(KindAll)
+// 注：原对照测试（vs gopsutil，步骤 3 验证原生枚举 617 条 vs gopsutil 617 条 0 差异）
+// 已完成使命。gopsutil 依赖移除后（步骤 6），这里保留自洽的结构/映射验证。
+
+// TestEnumerateAll 返回非空连接列表（本机必然有 TCP/UDP 端点）。
+func TestEnumerateAll(t *testing.T) {
+	conns, err := ListConnections(KindAll)
 	if err != nil {
-		t.Fatalf("原生枚举失败: %v", err)
+		t.Fatalf("ListConnections 失败: %v", err)
 	}
-
-	theirs, err := psnet.Connections("all")
-	if err != nil {
-		t.Fatalf("gopsutil 枚举失败: %v", err)
+	if len(conns) == 0 {
+		t.Error("KindAll 应返回非空连接列表（本机必有端口）")
 	}
-
-	oursSet := make(map[string]int, len(ours))
-	for _, c := range ours {
-		oursSet[connFingerprint(string(c.Protocol), c.LocalAddr, c.LocalPort, c.RemoteAddr, c.RemotePort, c.Pid, c.State)]++
-	}
-	theirsSet := make(map[string]int, len(theirs))
-	for _, c := range theirs {
-		proto := "tcp"
-		if c.Type == 2 {
-			proto = "udp"
+	// 抽查：所有连接的 Protocol 应是合法值、State 非空（UDP→NONE）
+	for i, c := range conns {
+		if c.Protocol != ProtocolTCP && c.Protocol != ProtocolUDP {
+			t.Errorf("连接 %d 协议非法: %q", i, c.Protocol)
 		}
-		state := c.Status
-		if state == "" {
-			state = "NONE"
+		if c.State == "" {
+			t.Errorf("连接 %d State 不应为空（UDP 应兜底成 NONE）: %+v", i, c)
 		}
-		theirsSet[connFingerprint(proto, c.Laddr.IP, uint16(c.Laddr.Port), c.Raddr.IP, uint16(c.Raddr.Port), c.Pid, state)]++
+		if c.LocalPort == 0 {
+			t.Errorf("连接 %d LocalPort 不应为 0: %+v", i, c)
+		}
 	}
-
-	onlyOurs, onlyTheirs := diffSets(oursSet, theirsSet)
-
-	// 允许端口表的瞬态变化（10% + 5 的容差）
-	total := len(ours) + len(theirs)
-	if len(onlyOurs)+len(onlyTheirs) > total/10+5 {
-		t.Errorf("原生 vs gopsutil 差异过大（总 %d 条）:\n  仅原生: %d 样例 %v\n  仅gopsutil: %d 样例 %v",
-			total, len(onlyOurs), firstN(onlyOurs, 3), len(onlyTheirs), firstN(onlyTheirs, 3))
-	}
-	t.Logf("对照统计: 原生=%d gopsutil=%d 仅原生=%d 仅gops=%d（瞬态差异可接受）",
-		len(ours), len(theirs), len(onlyOurs), len(onlyTheirs))
+	t.Logf("枚举到 %d 条连接", len(conns))
 }
 
-// TestTcpStateMappingComplete 验证 TCP 状态映射逐值复刻 gopsutil（审查 Issue 3）。
+// TestEnumerateTcpOnly 验证 KindTCP 只返回 TCP。
+func TestEnumerateTcpOnly(t *testing.T) {
+	conns, err := ListConnections(KindTCP)
+	if err != nil {
+		t.Fatalf("ListConnections(KindTCP) 失败: %v", err)
+	}
+	for i, c := range conns {
+		if c.Protocol != ProtocolTCP {
+			t.Errorf("KindTCP 结果 %d 应全是 TCP，got %q", i, c.Protocol)
+		}
+	}
+}
+
+// TestEnumerateUdpOnly 验证 KindUDP 只返回 UDP，且 State 全为 NONE。
+func TestEnumerateUdpOnly(t *testing.T) {
+	conns, err := ListConnections(KindUDP)
+	if err != nil {
+		t.Fatalf("ListConnections(KindUDP) 失败: %v", err)
+	}
+	for i, c := range conns {
+		if c.Protocol != ProtocolUDP {
+			t.Errorf("KindUDP 结果 %d 应全是 UDP，got %q", i, c.Protocol)
+		}
+		if c.State != "NONE" {
+			t.Errorf("UDP 连接 %d State 应为 NONE，got %q", i, c.State)
+		}
+	}
+}
+
+// TestTcpStateMappingComplete 验证 TCP 状态映射逐值复刻（审查 Issue 3）。
 func TestTcpStateMappingComplete(t *testing.T) {
 	cases := map[uint32]string{
 		0:  "", // UNKNOWN → 空串（由 scanner 兜底 NONE）
@@ -80,7 +87,6 @@ func TestTcpStateMappingComplete(t *testing.T) {
 
 // TestIPv4String 验证 IPv4 地址解析（网络字节序小端存储）。
 func TestIPv4String(t *testing.T) {
-	// 0x0100007F 内存小端为 7F 00 00 01 → "127.0.0.1"
 	if got := ipv4String(0x0100007F); got != "127.0.0.1" {
 		t.Errorf("ipv4String(0x0100007F) = %q, want 127.0.0.1", got)
 	}
@@ -95,55 +101,4 @@ func TestNtohs(t *testing.T) {
 	if got := ntohs(0x5000); got != 80 {
 		t.Errorf("ntohs(0x5000) = %d, want 80", got)
 	}
-}
-
-// --- 辅助函数 ---
-
-func connFingerprint(proto, lAddr string, lPort uint16, rAddr string, rPort uint16, pid int32, state string) string {
-	return proto + "|" + lAddr + ":" + itoa32(int(lPort)) + "->" + rAddr + ":" + itoa32(int(rPort)) + "|pid=" + itoa32(int(pid)) + "|" + state
-}
-
-func diffSets(a, b map[string]int) (onlyA, onlyB []string) {
-	for k := range a {
-		if _, ok := b[k]; !ok {
-			onlyA = append(onlyA, k)
-		}
-	}
-	for k := range b {
-		if _, ok := a[k]; !ok {
-			onlyB = append(onlyB, k)
-		}
-	}
-	sort.Strings(onlyA)
-	sort.Strings(onlyB)
-	return
-}
-
-func firstN(s []string, n int) []string {
-	if len(s) > n {
-		return s[:n]
-	}
-	return s
-}
-
-func itoa32(i int) string {
-	if i == 0 {
-		return "0"
-	}
-	neg := i < 0
-	if neg {
-		i = -i
-	}
-	var buf [12]byte
-	pos := len(buf)
-	for i > 0 {
-		pos--
-		buf[pos] = byte('0' + i%10)
-		i /= 10
-	}
-	if neg {
-		pos--
-		buf[pos] = '-'
-	}
-	return string(buf[pos:])
 }
