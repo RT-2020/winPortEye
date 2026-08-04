@@ -2,13 +2,11 @@ package core
 
 import (
 	"fmt"
-
-	psnet "github.com/shirou/gopsutil/v4/net"
 )
 
 // FilterKind 控制端口枚举的协议/地址族过滤。
 // 取值："all" / "tcp" / "tcp4" / "tcp6" / "udp" / "udp4" / "udp6"
-// 对应 gopsutil net.Connections 的 kind 参数。
+// 语义与 gopsutil net.Connections 的 kind 参数完全一致（已逐值复刻）。
 type FilterKind string
 
 const (
@@ -24,11 +22,11 @@ const (
 // ListConnections 枚举网络连接，并关联占用进程信息。
 // kind 控制 TCP/UDP × IPv4/IPv6 的过滤，传 KindAll 枚举全部。
 //
-// 注意：单次 net.Connections("tcp") 已同时返回 IPv4+IPv6，
-// 因此这里把 kind 拆成需要的组合调用，避免重复查表。
+// 底层用 GetExtendedTcpTable/GetExtendedUdpTable（替换 gopsutil），
+// 协议类型由「来自哪张表」隐式确定（TCP 表→ProtocolTCP，UDP 表→ProtocolUDP），
+// 不再有 c.Type 判定（原生 API 行结构无 Type 字段）。
 func ListConnections(kind FilterKind) ([]Connection, error) {
-	// gopsutil 的 kind 直接支持组合，无需手动拼
-	rawConns, err := psnet.Connections(string(kind))
+	rawConns, err := enumerateConnections(kind)
 	if err != nil {
 		return nil, fmt.Errorf("枚举连接失败: %w", err)
 	}
@@ -39,26 +37,21 @@ func ListConnections(kind FilterKind) ([]Connection, error) {
 
 	result := make([]Connection, 0, len(rawConns))
 	for _, c := range rawConns {
-		// 判定协议：根据 Type（SOCK_STREAM=TCP / SOCK_DGRAM=UDP）
-		proto := ProtocolTCP
-		if c.Type == 2 { // SOCK_DGRAM
-			proto = ProtocolUDP
-		}
-
 		conn := Connection{
-			Protocol:   proto,
-			LocalAddr:  c.Laddr.IP,
-			LocalPort:  uint16(c.Laddr.Port),
-			RemoteAddr: c.Raddr.IP,
-			RemotePort: uint16(c.Raddr.Port),
-			State:      c.Status,
-			Pid:        c.Pid,
+			Protocol:   c.protocol, // 由表决定：TCP 表→tcp，UDP 表→udp
+			LocalAddr:  c.localAddr,
+			LocalPort:  c.localPort,
+			RemoteAddr: c.remoteAddr,
+			RemotePort: c.remotePort,
+			State:      c.state, // TCP 状态字符串；UDP 为空串
+			Pid:        c.pid,
 		}
+		// UDP 行 state 为空、TCP 未知状态也为空 → 统一兜底成 "NONE"
 		if conn.State == "" {
 			conn.State = "NONE"
 		}
-		if c.Pid > 0 {
-			conn.ProcessName, conn.ProcessPath = q.namePath(c.Pid)
+		if c.pid > 0 {
+			conn.ProcessName, conn.ProcessPath = q.namePath(c.pid)
 		}
 		result = append(result, conn)
 	}
