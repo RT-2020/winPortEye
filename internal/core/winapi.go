@@ -23,6 +23,7 @@ var (
 	procCloseHandle                   = modkernel32.NewProc("CloseHandle")
 	procGetCurrentProcessId           = modkernel32.NewProc("GetCurrentProcessId")
 	procGetProcessTimes               = modkernel32.NewProc("GetProcessTimes")
+	procTerminateProcess              = modkernel32.NewProc("TerminateProcess")
 )
 
 // OpenProcess 访问权限位（只定义用到的）。
@@ -111,4 +112,52 @@ func getProcessCreateTime(pid int32) int64 {
 	}
 	// syscall.Filetime.Nanoseconds() 已封装了 1601→epoch 换算
 	return creation.Nanoseconds() / 1e6
+}
+
+// processExists 判断进程是否存在（用 OpenProcess 成败判定）。
+// 替代 gopsutil 的 PidExists（gopsutil 用 SYNCHRONIZE+WaitForSingleObject，语义略强，
+// 但这里成否判定对 killer 的两级杀流程足够：误判存在时后续 TerminateProcess 失败会
+// 自然落到第 2 级 runas taskkill，观察到的 KillResult.Message 基本一致）。
+func processExists(pid int32) bool {
+	if pid <= 0 {
+		return false
+	}
+	handle, _, _ := procOpenProcess.Call(
+		uintptr(processQueryLimitedInformation),
+		uintptr(0),
+		uintptr(pid),
+	)
+	if handle == 0 {
+		return false
+	}
+	procCloseHandle.Call(handle)
+	return true
+}
+
+// terminateProcess 终止指定进程。
+// 返回 (true, nil) 表示成功；(false, err) 表示失败（权限不足/受保护/进程不存在）。
+// 替代 gopsutil 的 process.Kill（底层就是 TerminateProcess）。
+//
+// exitCode 固定传 1（与 taskkill /F 的默认退出码一致）。
+func terminateProcess(pid int32) error {
+	if pid <= 0 {
+		return fmt.Errorf("无效 PID: %d", pid)
+	}
+	// TerminateProcess 需要 PROCESS_TERMINATE (0x0001) 权限
+	const processTerminate = 0x0001
+	handle, _, _ := procOpenProcess.Call(
+		uintptr(processTerminate),
+		uintptr(0),
+		uintptr(pid),
+	)
+	if handle == 0 {
+		return fmt.Errorf("OpenProcess 失败（权限不足或进程不存在）")
+	}
+	defer procCloseHandle.Call(handle)
+
+	ret, _, _ := procTerminateProcess.Call(handle, uintptr(1))
+	if ret == 0 {
+		return fmt.Errorf("TerminateProcess 失败（可能受保护）")
+	}
+	return nil
 }

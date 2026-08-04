@@ -4,8 +4,6 @@ import (
 	"fmt"
 	"syscall"
 	"unsafe"
-
-	"github.com/shirou/gopsutil/v4/process"
 )
 
 var (
@@ -19,21 +17,21 @@ var (
 //
 // 注意：runas 提权会弹出 UAC 对话框；MCP 模式（无交互桌面）下 runas 会失败，
 // 调用方应据此返回"需在桌面会话手动处理"的提示。
+//
+// 第 1 级用原生 TerminateProcess（替换 gopsutil process.Kill，底层同一 API）。
 func KillProcess(pid int32) KillResult {
 	if pid <= 0 {
 		return KillResult{Success: false, Message: "无效的 PID", Pid: pid}
 	}
 
-	// 第 1 级：直接杀。gopsutil 的 process.Kill 内部调 TerminateProcess。
-	if exists, _ := process.PidExists(pid); !exists {
+	// 第 1 级：直接杀（原生 TerminateProcess）。
+	if !processExists(pid) {
 		return KillResult{Success: false, Message: "进程不存在", Pid: pid}
 	}
-	if p, err := process.NewProcess(pid); err == nil {
-		if err := p.Kill(); err == nil {
-			return KillResult{Success: true, Message: "已终止（直接）", Pid: pid}
-		}
-		// 失败则进入第 2 级
+	if err := terminateProcess(pid); err == nil {
+		return KillResult{Success: true, Message: "已终止（直接）", Pid: pid}
 	}
+	// 失败则进入第 2 级
 
 	// 第 2 级：提权 taskkill /F /PID（弹 UAC）
 	if err := killElevated(pid); err != nil {
