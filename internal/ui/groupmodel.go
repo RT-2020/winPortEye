@@ -133,7 +133,14 @@ func (m *ProcessGroupModel) SetKeyword(kw string) {
 
 // aggregate 按 PID 聚合 m.raw，生成 m.rows 与 m.groups。
 func (m *ProcessGroupModel) aggregate() {
-	m.groups = make(map[int32][]core.Connection, len(m.rows)+8)
+	// 复用 map（clear 比 make 省一次分配）；watcher 每 3 秒调一次，降低 GC 压力。
+	// map 每个 key 的 value slice 不复用（累加语义下 [:0] 会误清，索性每次新建），
+	// 主要收益来自 map 本身的 buckets 复用。
+	if m.groups == nil {
+		m.groups = make(map[int32][]core.Connection, len(m.rows)+8)
+	} else {
+		clear(m.groups)
+	}
 	for _, c := range m.raw {
 		m.groups[c.Pid] = append(m.groups[c.Pid], c)
 	}
