@@ -83,3 +83,54 @@ func TestNamePathInvalidPid(t *testing.T) {
 		t.Logf("PID 99999999 返回 name=%q path=%q（非空也可能是系统复用，仅记录）", name, path)
 	}
 }
+
+// TestCmdlineMatchesGopsutil 验证原生 PEB 遍历读出的命令行与 gopsutil 一致。
+// 步骤 2.5 的对照验证（Cmdline 是冷路径，仅 MCP get_process 工具用）。
+func TestCmdlineMatchesGopsutil(t *testing.T) {
+	pid := int32(getCurrentPID())
+	ourCmd := getProcessCommandLine(pid)
+
+	gp, err := gopsprocess.NewProcess(pid)
+	if err != nil {
+		t.Fatalf("gopsutil NewProcess 失败: %v", err)
+	}
+	gopsCmd, _ := gp.Cmdline()
+
+	// 命令行必须一致（测试进程必然能读到自己的 cmdline）
+	if ourCmd != gopsCmd {
+		t.Errorf("命令行不一致:\n  原生:  %q\n  gopsutil: %q", ourCmd, gopsCmd)
+	}
+	if ourCmd == "" {
+		t.Error("当前进程的命令行不应为空（测试进程应能读到自己）")
+	}
+}
+
+// TestCreateTimeMatchesGopsutil 验证原生 GetProcessTimes 取的创建时间与 gopsutil 一致。
+func TestCreateTimeMatchesGopsutil(t *testing.T) {
+	pid := int32(getCurrentPID())
+	ourCT := getProcessCreateTime(pid)
+
+	gp, err := gopsprocess.NewProcess(pid)
+	if err != nil {
+		t.Fatalf("gopsutil NewProcess 失败: %v", err)
+	}
+	gopsCT, _ := gp.CreateTime()
+
+	// 创建时间应完全一致（同一 API 底层）
+	if ourCT != gopsCT {
+		t.Errorf("创建时间不一致: 原生=%d gopsutil=%d (差 %d ms)", ourCT, gopsCT, ourCT-gopsCT)
+	}
+	if ourCT == 0 {
+		t.Error("创建时间不应为 0")
+	}
+}
+
+// TestCmdlineSystemProcessReturnsEmpty 验证系统进程（PID 4）读 cmdline 返回空串。
+// 这是 §4.2 不变量：权限不足/系统进程 → CommandLine 返回空串（与 gopsutil 一致）。
+func TestCmdlineSystemProcessReturnsEmpty(t *testing.T) {
+	// PID 4 是 System 进程，VM_READ 必然被拒，应降级返回空串
+	cmd := getProcessCommandLine(4)
+	if cmd != "" {
+		t.Errorf("PID 4 (System) 应返回空串（权限不足），got %q", cmd)
+	}
+}

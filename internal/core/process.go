@@ -2,33 +2,26 @@ package core
 
 import (
 	"path/filepath"
-
-	"github.com/shirou/gopsutil/v4/process"
 )
 
 // GetProcessInfo 查询指定 PID 的进程详细信息。
-// 对部分系统进程，Name/Exe 可能因权限不足返回空，这是正常现象。
+// 对部分系统进程，Name/Exe/CommandLine 可能因权限不足返回空，这是正常现象。
 //
-// 注意：Name/Path 已改用原生 QueryFullProcessImageNameW（步骤 2），
-// Cmdline/CreateTime 暂仍走 gopsutil，步骤 2.5 会替换为原生实现。
+// 全部字段已改用原生 Win32 API：
+//   - Name/Path: QueryFullProcessImageNameW
+//   - CommandLine: PEB 遍历（cmdline.go）
+//   - CreateTime: GetProcessTimes
 func GetProcessInfo(pid int32) (ProcessInfo, error) {
 	// Name/Path：原生 API（一次查询拿两个值）
 	q := newProcQueryContext()
 	name, path := q.namePath(pid)
 
-	// Cmdline/CreateTime：暂留 gopsutil，步骤 2.5 替换
-	p, err := process.NewProcess(pid)
-	cmdline, ctime := "", int64(0)
-	if err == nil {
-		cmdline, _ = p.Cmdline()
-		ctime, _ = p.CreateTime()
-	}
 	return ProcessInfo{
 		Pid:         pid,
 		Name:        name,
 		Path:        path,
-		CommandLine: cmdline,
-		CreateTime:  ctime,
+		CommandLine: getProcessCommandLine(pid), // PEB 遍历，权限不足返回空串
+		CreateTime:  getProcessCreateTime(pid),   // GetProcessTimes，权限不足返回 0
 	}, nil
 }
 

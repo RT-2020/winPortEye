@@ -22,6 +22,7 @@ var (
 	procQueryFullProcessImageNameW    = modkernel32.NewProc("QueryFullProcessImageNameW")
 	procCloseHandle                   = modkernel32.NewProc("CloseHandle")
 	procGetCurrentProcessId           = modkernel32.NewProc("GetCurrentProcessId")
+	procGetProcessTimes               = modkernel32.NewProc("GetProcessTimes")
 )
 
 // OpenProcess 访问权限位（只定义用到的）。
@@ -76,4 +77,38 @@ func queryProcessImagePath(pid int32, buf []uint16) (string, error) {
 func getCurrentPID() uint32 {
 	ret, _, _ := procGetCurrentProcessId.Call()
 	return uint32(ret)
+}
+
+// getProcessCreateTime 用 GetProcessTimes 取进程创建时间（毫秒，自 epoch）。
+// 权限不足/进程不存在 → 返回 0（与 gopsutil createTimeWithContext 行为一致）。
+//
+// 实现参照 gopsutil v4.26.7 的 getRusage（底层就是 GetProcessTimes）。
+// FILETIME 是 1601-01-01 起的 100ns 单位，需换算成 1970 epoch 毫秒。
+func getProcessCreateTime(pid int32) int64 {
+	if pid <= 0 {
+		return 0
+	}
+	handle, _, _ := procOpenProcess.Call(
+		uintptr(processQueryLimitedInformation),
+		uintptr(0),
+		uintptr(pid),
+	)
+	if handle == 0 {
+		return 0
+	}
+	defer procCloseHandle.Call(handle)
+
+	var creation, exit, kernel, user syscall.Filetime
+	ret, _, _ := procGetProcessTimes.Call(
+		handle,
+		uintptr(unsafe.Pointer(&creation)),
+		uintptr(unsafe.Pointer(&exit)),
+		uintptr(unsafe.Pointer(&kernel)),
+		uintptr(unsafe.Pointer(&user)),
+	)
+	if ret == 0 {
+		return 0
+	}
+	// syscall.Filetime.Nanoseconds() 已封装了 1601→epoch 换算
+	return creation.Nanoseconds() / 1e6
 }
