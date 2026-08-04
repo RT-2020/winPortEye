@@ -1,6 +1,8 @@
 package core
 
 import (
+	"path/filepath"
+
 	"github.com/shirou/gopsutil/v4/process"
 )
 
@@ -25,38 +27,34 @@ func GetProcessInfo(pid int32) (ProcessInfo, error) {
 	}, nil
 }
 
-// 批量场景下按 PID 查进程名（轻量版），内部带缓存避免重复 OpenProcess。
-func getProcessName(pid int32, cache map[int32]string) string {
-	if pid <= 0 {
-		return ""
-	}
-	if name, ok := cache[pid]; ok {
-		return name
-	}
-	name := ""
-	if p, err := process.NewProcess(pid); err == nil {
-		if n, err := p.Name(); err == nil {
-			name = n
-		}
-	}
-	cache[pid] = name
-	return name
+// procInfoCache 缓存一次扫描中某 PID 的「进程名 + 完整路径」。
+// 之所以合并：gopsutil 的 Name() 内部实现就是 filepath.Base(Exe())，
+// 原先 getProcessName/getProcessPath 各调一次，导致同一 PID 的完整路径被查了两遍。
+// 合并后只查一次 Exe，name 取 Base、path 取完整路径，开销减半。
+type procInfoCache struct {
+	name string
+	path string
 }
 
-// 批量场景下按 PID 查进程路径（轻量版），内部带缓存。
-func getProcessPath(pid int32, cache map[int32]string) string {
+// getProcessNamePath 一次查询拿到进程名和完整路径，内部带缓存避免重复 OpenProcess。
+// 进程名 = filepath.Base(完整路径)；权限不足/系统进程时两者均返回空串（与原行为一致）。
+func getProcessNamePath(pid int32, cache map[int32]procInfoCache) (name, path string) {
 	if pid <= 0 {
-		return ""
+		return "", ""
 	}
-	if p, ok := cache[pid]; ok {
-		return p
+	if info, ok := cache[pid]; ok {
+		return info.name, info.path
 	}
-	path := ""
+	path = ""
 	if p, err := process.NewProcess(pid); err == nil {
 		if e, err := p.Exe(); err == nil {
 			path = e
 		}
 	}
-	cache[pid] = path
-	return path
+	name = filepath.Base(path) // path 为空时 Base 返回 "."，需归一化为空串
+	if name == "." || name == string(filepath.Separator) {
+		name = ""
+	}
+	cache[pid] = procInfoCache{name: name, path: path}
+	return name, path
 }
