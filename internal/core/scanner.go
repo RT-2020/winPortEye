@@ -34,8 +34,8 @@ func ListConnections(kind FilterKind) ([]Connection, error) {
 	}
 
 	// 进程名/路径缓存：同一次扫描中多个端口常属同一进程，避免重复 OpenProcess
-	// 合并缓存：gopsutil 的 Name()=Base(Exe())，一次 Exe 调用即可同时拿到 name 和 path
-	procCache := make(map[int32]procInfoCache, 128)
+	// 用 context 复用 []uint16 缓冲区 + PID 缓存，进一步降低分配
+	q := newProcQueryContext()
 
 	result := make([]Connection, 0, len(rawConns))
 	for _, c := range rawConns {
@@ -58,7 +58,7 @@ func ListConnections(kind FilterKind) ([]Connection, error) {
 			conn.State = "NONE"
 		}
 		if c.Pid > 0 {
-			conn.ProcessName, conn.ProcessPath = getProcessNamePath(c.Pid, procCache)
+			conn.ProcessName, conn.ProcessPath = q.namePath(c.Pid)
 		}
 		result = append(result, conn)
 	}
