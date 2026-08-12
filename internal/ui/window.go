@@ -441,6 +441,13 @@ func Run(version string) {
 		log.Fatalf("创建主窗口失败: %v", err)
 	}
 
+	// 主窗口图标：嵌入 exe 的项目图标，加载一次存变量供窗口与托盘共用
+	// （walk SetIcon 不转移所有权，共享同一实例安全，避免重复加载泄漏 HICON）。
+	appIcon, _ := loadAppIcon()
+	if appIcon != nil {
+		mw.SetIcon(appIcon)
+	}
+
 	// 构造更新控制器（trayIcon 字段在下方 setupTray 返回后补赋）。
 	uc = newUpdaterController(mw, updateBtn, version)
 
@@ -462,7 +469,7 @@ func Run(version string) {
 
 	// 创建托盘图标 + 拦截关闭按钮
 	// 传 uc.cancel 作为托盘退出的回调：进程真实退出时取消下载 ctx（窗口关闭=藏托盘不取消）。
-	if ni, err := setupTray(mw, uc.cancel); err != nil {
+	if ni, err := setupTray(mw, appIcon, uc.cancel); err != nil {
 		log.Printf("托盘创建失败（不影响主功能）: %v", err)
 	} else {
 		trayIcon = ni

@@ -1,0 +1,29 @@
+{
+  "RT_GROUP_ICON": {
+    "#1": {
+      "0000": "../assets/porteye.ico"
+    }
+  },
+  "RT_VERSION": {
+    "#1": {
+      "0000": {
+        "fixed": {
+          "file_version": "0.3.0.0",
+          "product_version": "0.3.0.0"
+        },
+        "info": {
+          "0409": {
+            "CompanyName": "RT-2020",
+            "FileDescription": "PortEye 端口之眼",
+            "FileVersion": "0.3.0",
+            "InternalName": "PortEye",
+            "LegalCopyright": "Copyright (c) RT-2020",
+            "OriginalFilename": "porteye.exe",
+            "ProductName": "PortEye",
+            "ProductVersion": "0.3.0"
+          }
+        }
+      }
+    }
+  }
+}

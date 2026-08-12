@@ -3,7 +3,6 @@ package ui
 import (
 	"fmt"
 	"os"
-	"syscall"
 
 	"github.com/lxn/walk"
 	"github.com/lxn/win"
@@ -14,16 +13,18 @@ import (
 // 菜单项：显示窗口 / 开机自启(勾选) / 退出。
 // onQuit 在「退出」菜单触发、真正退出进程前调用（用于取消后台下载 ctx 等；
 // nil 表示无回调）。窗口关闭=藏托盘不会触发 onQuit。
-func setupTray(mw *walk.MainWindow, onQuit func()) (*walk.NotifyIcon, error) {
+func setupTray(mw *walk.MainWindow, appIcon *walk.Icon, onQuit func()) (*walk.NotifyIcon, error) {
 	ni, err := walk.NewNotifyIcon(mw)
 	if err != nil {
 		return nil, err
 	}
 
-	// 图标：用 shell32.dll 里的网络图标（ID=275）兜底
-	icon, err := loadShellIcon(275)
-	if err != nil {
-		icon = walk.IconInformation() // 退一步用内置信息图标
+	// 图标：复用主窗口加载的嵌入图标实例（walk SetIcon 不转移所有权，
+	// 共享同一 *walk.Icon 安全，避免重复加载泄漏 HICON）；
+	// 若未加载到则退回 walk 内置信息图标，保证托盘始终有图标。
+	icon := appIcon
+	if icon == nil {
+		icon = walk.IconInformation()
 	}
 	ni.SetIcon(icon)
 	ni.SetToolTip("PortEye 端口之眼")
@@ -145,15 +146,8 @@ func isAutoStart() bool {
 	return err == nil
 }
 
-// loadShellIcon 从 shell32.dll 加载系统图标（按资源 ID）。
-func loadShellIcon(resID uint32) (*walk.Icon, error) {
-	h, err := syscall.LoadLibrary("shell32.dll")
-	if err != nil {
-		return nil, fmt.Errorf("加载 shell32.dll 失败: %w", err)
-	}
-	hIcon := win.LoadIcon(win.HINSTANCE(h), win.MAKEINTRESOURCE(uintptr(resID)))
-	if hIcon == 0 {
-		return nil, fmt.Errorf("LoadIcon 失败 resID=%d", resID)
-	}
-	return walk.NewIconFromHICON(hIcon)
+// loadAppIcon 加载嵌入 exe 的项目图标（RT_GROUP_ICON 资源 ID=1，
+// 由 winres/winres.json 在构建期嵌入）。失败时返回错误，由调用方兜底。
+func loadAppIcon() (*walk.Icon, error) {
+	return walk.NewIconFromResourceId(1)
 }

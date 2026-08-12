@@ -3,6 +3,8 @@
 *.exe~
 *.dll
 *.syso
+# 例外：go-winres 生成的资源 syso 需进仓库（发版构建链接用）
+!/winres_windows_*.syso
 
 # Go 测试/缓存
 *.test
