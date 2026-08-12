@@ -100,6 +100,7 @@ func Run() {
 	var detailLabel *walk.Label
 	var excludeHintLabel *walk.Label // 端口排除范围提示条（搜索命中时显示）
 	var killBtn *walk.PushButton
+	var killAction *walk.Action // 主表右键菜单「终止选中进程」项，右键时按选中数同步文案
 	var elevateBtn *walk.PushButton
 	var trayIcon *walk.NotifyIcon // 托盘图标（提权重启退出前需摘除，避免幽灵图标）
 
@@ -345,6 +346,39 @@ func Run() {
 					{Title: "路径", Width: 320},
 				},
 				Model: groupModel,
+				// 右键按下时先校正选中：walk 原版对 WM_RBUTTONDOWN 不改选中行，
+				// 直接弹菜单会针对错误的行操作，故这里按命中行重算选中集合。
+				OnMouseDown: func(x, y int, button walk.MouseButton) {
+					if button != walk.RightButton {
+						return
+					}
+					idx := masterTV.IndexAt(x, y)
+					cur := masterTV.SelectedIndexes()
+					next := resolveRightClickSelection(idx, cur)
+					// 只有选中确实变化才 Set：SetSelectedIndexes 会先清空整表选中态
+					// 再重设（LVM_SETITEMSTATE ^0），无谓调用导致整表闪烁 + 焦点丢失。
+					if !intsEqual(next, cur) {
+						masterTV.SetSelectedIndexes(next)
+					}
+					// 同步右键菜单文案与可用态，与左下角按钮保持一致（updateKillBtn 的同款规则）
+					if killAction != nil {
+						n := len(next)
+						killAction.SetEnabled(n >= 1)
+						if n <= 1 {
+							killAction.SetText("终止选中进程")
+						} else {
+							killAction.SetText(fmt.Sprintf("终止选中进程（%d 个）", n))
+						}
+					}
+				},
+				// 主表右键上下文菜单：复用 killSelected，不改其实现。
+				ContextMenuItems: []MenuItem{
+					Action{
+						AssignTo:    &killAction,
+						Text:        "终止选中进程",
+						OnTriggered: func() { killSelected(mw, masterTV, groupModel, reload) },
+					},
+				},
 				OnCurrentIndexChanged: func() {
 					refreshDetail()
 				},
@@ -529,4 +563,40 @@ func killSelected(mw *walk.MainWindow, tv *walk.TableView, model *ProcessGroupMo
 	}
 
 	reload() // 刷新列表（增量 diff + 选中恢复）
+}
+
+// resolveRightClickSelection 计算右键按下后主表应采用的选中集合：
+//   - 右键落在空白区（idx<0）：保持原选中，让用户在原选中基础上继续操作；
+//   - 右键落在已选中行：保持多选，不破坏用户已建立的选中状态（否则右键点已选
+//     中行反而把多选缩成单选，与左键行为不一致且反直觉）；
+//   - 右键落在未选中行：单选该行，使后续菜单动作明确针对这一行。
+//
+// 抽成纯函数便于单测覆盖三条规则；调用方据此决定是否 SetSelectedIndexes。
+// 「不变」情形返回入参 selected 本体（同一底层数组），「变化」情形返回新切片，
+// 配合 intsEqual 即可低成本判断是否需要写回。
+func resolveRightClickSelection(idx int, selected []int) []int {
+	if idx < 0 {
+		return selected
+	}
+	for _, s := range selected {
+		if s == idx {
+			return selected // 已在选中集合中，保持不变（保多选）
+		}
+	}
+	return []int{idx}
+}
+
+// intsEqual 顺序敏感地比较两个 int 切片是否内容相同。
+// 用于右键选中决策时避免对未变化的选中集合重复调 SetSelectedIndexes
+// （后者会清空整表选中态导致闪烁）。
+func intsEqual(a, b []int) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for i := range a {
+		if a[i] != b[i] {
+			return false
+		}
+	}
+	return true
 }
