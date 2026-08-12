@@ -10,6 +10,11 @@ import (
 	"win/internal/ui"
 )
 
+// version 当前程序版本号，供「检查更新」与版本比较。
+// 默认 "dev"（go run / 未注入时）；正式构建用 -ldflags "-X main.version=0.3.0" 注入。
+// MCP 模式（--mcp）天然不进入更新流程，此变量仅 GUI 路径使用。
+var version = "dev"
+
 func main() {
 	// 注：原先这里设了 debug.SetMemoryLimit(64MB)，但实测会触发频繁 GC 导致
 	// UI 刷新时整片重绘闪烁（GC STW 暂停）。已移除，让 Go 用默认 GOGC 策略。
@@ -23,5 +28,5 @@ func main() {
 		}
 	}
 	// 默认：启动 GUI
-	ui.Run()
+	ui.Run(version)
 }

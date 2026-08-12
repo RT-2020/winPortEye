@@ -12,7 +12,9 @@ import (
 
 // setupTray 创建系统托盘图标并绑定交互。
 // 菜单项：显示窗口 / 开机自启(勾选) / 退出。
-func setupTray(mw *walk.MainWindow) (*walk.NotifyIcon, error) {
+// onQuit 在「退出」菜单触发、真正退出进程前调用（用于取消后台下载 ctx 等；
+// nil 表示无回调）。窗口关闭=藏托盘不会触发 onQuit。
+func setupTray(mw *walk.MainWindow, onQuit func()) (*walk.NotifyIcon, error) {
 	ni, err := walk.NewNotifyIcon(mw)
 	if err != nil {
 		return nil, err
@@ -66,6 +68,9 @@ func setupTray(mw *walk.MainWindow) (*walk.NotifyIcon, error) {
 	actQuit := walk.NewAction()
 	actQuit.SetText("退出")
 	actQuit.Triggered().Attach(func() {
+		if onQuit != nil {
+			onQuit() // 进程真实退出前取消后台任务（如下载 ctx）
+		}
 		ni.Dispose()       // 先移除托盘图标
 		walk.App().Exit(0) // 真正退出
 	})

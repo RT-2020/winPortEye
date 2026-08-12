@@ -88,7 +88,8 @@ var criticalProcessNames = map[string]bool{
 }
 
 // Run 启动 GUI 主窗口。阻塞直到窗口关闭。
-func Run() {
+// version 为当前程序版本号（由 main.go 经 ldflags 注入），用于检查更新时的版本比较。
+func Run(version string) {
 	setLogFile()
 
 	groupModel := NewProcessGroupModel()
@@ -102,6 +103,8 @@ func Run() {
 	var killBtn *walk.PushButton
 	var killAction *walk.Action // 主表右键菜单「终止选中进程」项，右键时按选中数同步文案
 	var elevateBtn *walk.PushButton
+	var updateBtn *walk.PushButton // 「有新版本 vX.X.X」按钮，默认隐藏，启动检查发现更新后显示
+	var uc *updaterController      // 更新控制器（MainWindow.Create 后赋值；OnClicked 闭包延迟引用，故允许 nil）
 	var trayIcon *walk.NotifyIcon // 托盘图标（提权重启退出前需摘除，避免幽灵图标）
 
 	// updateExcludeHint 根据搜索框内容判断是否命中 Windows 端口排除范围，
@@ -316,6 +319,17 @@ func Run() {
 							mw.Close()
 						},
 					},
+					// 更新按钮：声明时隐藏（Visible:false），启动后台检查发现新版本后
+					// 经 uc.applyRemoteUpdate → SetVisible(true) 显示。hover 展示 changelog tooltip。
+					PushButton{
+						AssignTo: &updateBtn,
+						Visible:  false,
+						OnClicked: func() {
+							if uc != nil {
+								uc.onButtonClicked()
+							}
+						},
+					},
 					PushButton{Text: "⚙ 设置", OnClicked: func() { showSettings(mw) }},
 				},
 			},
@@ -427,6 +441,9 @@ func Run() {
 		log.Fatalf("创建主窗口失败: %v", err)
 	}
 
+	// 构造更新控制器（trayIcon 字段在下方 setupTray 返回后补赋）。
+	uc = newUpdaterController(mw, updateBtn, version)
+
 	// 初始化提权按钮状态
 	if core.IsElevated() {
 		elevateBtn.SetText("已是管理员")
@@ -444,15 +461,20 @@ func Run() {
 	go func() { _, _, _ = core.ListExcludedPortRanges() }()
 
 	// 创建托盘图标 + 拦截关闭按钮
-	if ni, err := setupTray(mw); err != nil {
+	// 传 uc.cancel 作为托盘退出的回调：进程真实退出时取消下载 ctx（窗口关闭=藏托盘不取消）。
+	if ni, err := setupTray(mw, uc.cancel); err != nil {
 		log.Printf("托盘创建失败（不影响主功能）: %v", err)
 	} else {
 		trayIcon = ni
+		uc.trayIcon = ni // 补赋托盘图标，供立即重启更新路径 Dispose
 	}
 	hookCloseButton(mw)
 
 	// 启动后台轮询（定时在 UI 线程触发 reload，扫描/聚合/diff/选中恢复统一在 reload 内）
 	go startWatcher(mw, reload)
+
+	// 启动后台更新检查（先检 sidecar 再检远端，全程静默失败，不影响主功能）
+	uc.start()
 
 	mw.Show()
 	mw.Run()

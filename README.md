@@ -12,6 +12,7 @@
 - 👑 **管理员权限**：一键以管理员身份重启（拉起 UAC），重启后可获取此前因权限不足无法识别的进程名/路径
 - 🤖 **MCP 接入**：5 个工具（list_ports / find_port / get_process / kill_process / kill_by_port），AI 助手可调用
 - 📌 **托盘常驻**：最小化到托盘、开机自启、后台轮询
+- 🔄 **自动检查更新**：启动时静默检查 GitHub Releases，有新版本一键下载、重启即完成更新（已下载未安装会记住，下次启动直接提示安装）
 - 🎯 **无抖动刷新**：后台 3 秒轮询采用按 PID 增量 diff 更新（类似 Vue :key），仅变动行做增删改，焦点 / 滚动 / 多选选中位原样保留，操作中不被打断
 - ⚙ **设置面板**：MCP 配置一键复制、MCP 自检、开机自启
 - 🪶 **轻量**：单文件 ~11MB，静态编译无运行时依赖，内存占用低
@@ -21,8 +22,10 @@
 需要 Go 1.25+（依赖官方 MCP Go SDK）。
 
 ```bash
-go build -ldflags="-s -w -H=windowsgui" -o porteye.exe .
+go build -ldflags="-s -w -H=windowsgui -X main.version=0.3.0" -o porteye.exe .
 ```
+
+`-X main.version=0.3.0` 注入版本号（用于「检查更新」的版本比较，按实际发版号替换；缺省时为 `dev`，不触发更新）。其余标志：`-s -w` 去符号缩减体积，`-H=windowsgui` 隐藏控制台窗口。
 
 产物为单文件 `porteye.exe`（约 10 MB）。`porteye.exe.manifest` 需与 exe 放同一目录（启用 Common Controls v6 + DPI 感知）。
 
