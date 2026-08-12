@@ -145,6 +145,37 @@ func TestDiffAccessDenied(t *testing.T) {
 	}
 }
 
+// TestAccessDeniedTextByElevation AccessDenied 行的降级文案应随提权状态切换：
+// 未提权时引导用户提权（权限不足/需管理员权限）；
+// 已提权时仍打不开的是受保护的系统进程，再提权也没用，文案应改为系统进程/受保护。
+func TestAccessDeniedTextByElevation(t *testing.T) {
+	m := NewProcessGroupModel()
+	m.SetRaw([]core.Connection{
+		{Pid: 4, LocalPort: 443, ProcessName: "", ProcessPath: ""},
+	})
+	row := m.IndexOfPid(4)
+	if row < 0 {
+		t.Fatal("PID 4 应存在")
+	}
+
+	// 未提权（默认）：引导提权的文案
+	if got := m.Value(row, colGName); got != "(PID 4 · 权限不足)" {
+		t.Errorf("未提权进程名列 = %v, 期望 (PID 4 · 权限不足)", got)
+	}
+	if got := m.Value(row, colGPath); got != "(需管理员权限)" {
+		t.Errorf("未提权路径列 = %v, 期望 (需管理员权限)", got)
+	}
+
+	// 已提权：说明是受保护系统进程，不再暗示「提权可解决」
+	m.SetElevated(true)
+	if got := m.Value(row, colGName); got != "(PID 4 · 系统进程)" {
+		t.Errorf("已提权进程名列 = %v, 期望 (PID 4 · 系统进程)", got)
+	}
+	if got := m.Value(row, colGPath); got != "(受保护)" {
+		t.Errorf("已提权路径列 = %v, 期望 (受保护)", got)
+	}
+}
+
 // TestDiffConnsOfAfterRemove 删除进程后 ConnsOf 应返回 nil。
 func TestDiffConnsOfAfterRemove(t *testing.T) {
 	m := NewProcessGroupModel()

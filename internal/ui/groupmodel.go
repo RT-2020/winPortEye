@@ -53,10 +53,21 @@ type ProcessGroupModel struct {
 	sortedCol int                        // 当前排序列（-1 = 未排序）
 	sortOrder walk.SortOrder             // 当前排序方向
 	view      []ProcessGroupRow          // 实际展示的数据（过滤+排序后）
+	elevated  bool                       // 当前是否已提权；决定 AccessDenied 行的降级文案
 }
 
 func NewProcessGroupModel() *ProcessGroupModel {
 	return &ProcessGroupModel{sortedCol: -1, groups: make(map[int32][]core.Connection)}
+}
+
+// SetElevated 设置当前是否以管理员权限运行，影响 AccessDenied 行的降级文案：
+//   - 未提权：提示「权限不足 / 需管理员权限」，引导用户点「以管理员重启」；
+//   - 已提权：仍打不开的进程是受保护的系统进程（System/csrss/lsass 等 PPL 或
+//     内核进程），再提权也拿不到，继续提示「权限不足」会误导，改显示「系统进程 / 受保护」。
+//
+// 提权靠重启进程实现，运行期间该状态不会变化，启动时设置一次即可。
+func (m *ProcessGroupModel) SetElevated(elevated bool) {
+	m.elevated = elevated
 }
 
 // RowCount 实现 walk.TableModel。
@@ -75,6 +86,9 @@ func (m *ProcessGroupModel) Value(row, col int) interface{} {
 		return int(r.Pid)
 	case colGName:
 		if r.AccessDenied && r.ProcessName == "" {
+			if m.elevated {
+				return fmt.Sprintf("(PID %d · 系统进程)", r.Pid)
+			}
 			return fmt.Sprintf("(PID %d · 权限不足)", r.Pid)
 		}
 		return r.ProcessName
@@ -84,6 +98,9 @@ func (m *ProcessGroupModel) Value(row, col int) interface{} {
 		return r.PortSummary
 	case colGPath:
 		if r.AccessDenied && r.ProcessPath == "" {
+			if m.elevated {
+				return "(受保护)"
+			}
 			return "(需管理员权限)"
 		}
 		return r.ProcessPath

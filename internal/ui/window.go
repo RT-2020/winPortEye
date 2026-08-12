@@ -397,6 +397,9 @@ func Run() {
 	if core.IsElevated() {
 		elevateBtn.SetText("已是管理员")
 		elevateBtn.SetEnabled(false)
+		// 已是管理员时，拿不到名/路径的进程是受保护的系统进程（再提权也没用），
+		// 降级文案从「权限不足/需管理员权限」切换为「系统进程/受保护」，避免误导。
+		groupModel.SetElevated(true)
 	}
 
 	// 首次加载数据
@@ -434,7 +437,11 @@ func updateDetail(label *walk.Label, tv *walk.TableView, model *ProcessGroupMode
 	}
 	name := g.ProcessName
 	if g.AccessDenied && name == "" {
-		name = "(权限不足)"
+		if model.elevated {
+			name = "(系统进程)"
+		} else {
+			name = "(权限不足)"
+		}
 	}
 	label.SetText(fmt.Sprintf("PID %d  %s  %s  ·  占用 %d 个端口", g.Pid, name, g.ProcessPath, g.PortCount))
 }
