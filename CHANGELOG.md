@@ -4,6 +4,22 @@
 
 格式基于 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)，版本号遵循[语义化版本](https://semver.org/lang/zh-CN/)。
 
+## [0.3.0] - 2026-08-12
+
+### 新增
+
+- **自动检查更新**：启动时后台静默检查 GitHub Releases；发现新版本时工具栏出现「有新版本」按钮，hover 展示更新日志（tooltip），点击才开始下载（按钮实时显示进度）；下载完成弹窗选择「立即重启更新」（退出→自动替换→启动新版）或「稍后」（下次启动直接提示安装，不重复下载）。主进程退出后由临时 bat 完成替换，失败自动回退拉起旧版
+- **主表右键菜单**：右键进程行可直接终止选中进程，复用原有终止流程（确认框、系统进程警告、批量汇总）；右键自动校正选中行，命中已选中的多行时保持多选批量终止，无需再点左下角按钮
+
+### 修复
+
+- 已是管理员时，仍拿不到名/路径的进程改显示「系统进程 / 受保护」——原「权限不足 / 需管理员权限」文案会误导：此类进程（System/csrss/lsass 等）再提权也拿不到信息
+
+### 其他
+
+- 版本号注入：main.go 新增 `version` 变量，构建时以 `-ldflags "-X main.version=x.y.z"` 注入（README 构建命令同步）
+- 零新增第三方依赖
+
 ## [0.2.1] - 2026-08-12
 
 ### 性能优化
@@ -45,6 +61,7 @@
 - 托盘常驻：最小化到托盘、开机自启、后台轮询
 - 单文件 exe，绿色免安装
 
+[0.3.0]: https://github.com/RT-2020/winPortEye/compare/v0.2.1...v0.3.0
 [0.2.1]: https://github.com/RT-2020/winPortEye/compare/v0.2.0...v0.2.1
 [0.2.0]: https://github.com/RT-2020/winPortEye/compare/v0.1.0...v0.2.0
 [0.1.0]: https://github.com/RT-2020/winPortEye/releases/tag/v0.1.0
