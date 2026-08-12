@@ -27,7 +27,7 @@ func setupTray(mw *walk.MainWindow, appIcon *walk.Icon, onQuit func()) (*walk.No
 		icon = walk.IconInformation()
 	}
 	ni.SetIcon(icon)
-	ni.SetToolTip("PortEye 端口之眼")
+	ni.SetToolTip("PortEye")
 	ni.SetVisible(true)
 
 	// 左键单击：切换窗口显示/隐藏

@@ -8,8 +8,8 @@
 
 ### 新增
 
-- **PortEye Logo「端口之眼」**：深蓝渐变圆角底 + 虹膜环形端口（6 青 2 暗，暗色代表空闲口）+ 瞳孔网络节点高光；exe 文件图标、任务栏、窗口、系统托盘全部启用
-- exe 嵌入版本信息（`ProductVersion`、`FileDescription "PortEye 端口之眼"` 等），文件属性中可见
+- **PortEye Logo**：深蓝渐变圆角底 + 虹膜环形端口（6 青 2 暗，暗色代表空闲口）+ 瞳孔网络节点高光；exe 文件图标、任务栏、窗口、系统托盘全部启用
+- exe 嵌入版本信息（`ProductVersion`、`FileDescription "PortEye"` 等），文件属性中可见
 
 ### 其他
 
@@ -65,7 +65,7 @@
 
 ## [0.1.0] - 2026-08-03
 
-初始版本：PortEye 端口之眼 Windows 端口监控工具。
+初始版本：PortEye Windows 端口监控工具。
 
 - 端口监控：列出所有 TCP/UDP 连接（含 IPv4/IPv6）及占用进程的 PID/名称/路径
 - 一键终止占用进程
