@@ -5,12 +5,80 @@ import (
 	"log"
 	"strconv"
 	"strings"
+	"syscall"
 
 	"win/internal/core"
 
 	"github.com/lxn/walk"
 	. "github.com/lxn/walk/declarative"
+	"github.com/lxn/win"
 )
+
+// 滚动位置保存/恢复所需的 user32 API（walk 未公开 ListView 子窗口句柄，
+// 用 GetWindow 拿 SysListView32 子窗口）。
+var (
+	user32       = syscall.NewLazyDLL("user32.dll")
+	procGetWindow = user32.NewProc("GetWindow")
+)
+
+const (
+	gwChild    = 5 // GW_CHILD
+	gwHwndNext = 2 // GW_HWNDNEXT
+
+	lvmGetTopIndex     = win.LVM_FIRST + 39 // LVM_GETTOPINDEX
+	lvmGetCountPerPage = win.LVM_FIRST + 43 // LVM_GETCOUNTPERPAGE
+	lvmScroll          = win.LVM_FIRST + 20 // LVM_SCROLL
+)
+
+// listViewChildHWNDs 返回 walk TableView 内部的 SysListView32 子窗口句柄。
+// walk 的 TableView 用两个 ListView（frozen 左侧冻结列 + normal 主体），
+// 需要对两者都操作才能保持滚动一致。
+func listViewChildHWNDs(tv *walk.TableView) []win.HWND {
+	parent := tv.Handle()
+	if parent == 0 {
+		return nil
+	}
+	var result []win.HWND
+	// 枚举子窗口
+	hwnd, _, _ := procGetWindow.Call(
+		uintptr(parent),
+		uintptr(gwChild),
+	)
+	for hwnd != 0 {
+		result = append(result, win.HWND(hwnd))
+		hwnd, _, _ = procGetWindow.Call(hwnd, uintptr(gwHwndNext))
+	}
+	return result
+}
+
+// saveScrollTop 返回当前主表各 ListView 的顶项索引（用于刷新后恢复滚动位置）。
+func saveScrollTop(tv *walk.TableView) []int {
+	hwnds := listViewChildHWNDs(tv)
+	tops := make([]int, len(hwnds))
+	for i, hwnd := range hwnds {
+		tops[i] = int(win.SendMessage(hwnd, lvmGetTopIndex, 0, 0))
+	}
+	return tops
+}
+
+// restoreScrollTop 把主表各 ListView 滚回原来的顶项位置。
+// 用 LVM_SCROLL 按行差值滚动（LVM_ENSUREVISIBLE 会让目标行"可见"而非"在顶部"，
+// 无法精确恢复，故用 SCROLL）。
+func restoreScrollTop(tv *walk.TableView, tops []int) {
+	hwnds := listViewChildHWNDs(tv)
+	for i, hwnd := range hwnds {
+		if i >= len(tops) {
+			break
+		}
+		curr := int(win.SendMessage(hwnd, lvmGetTopIndex, 0, 0))
+		delta := curr - tops[i]
+		if delta != 0 {
+			win.SendMessage(hwnd, lvmScroll, 0, uintptr(delta))
+		}
+	}
+}
+
+// 关键系统进程名（小写匹配）。批量杀时若命中，弹红字警告。
 
 // 关键系统进程名（小写匹配）。批量杀时若命中，弹红字警告。
 var criticalProcessNames = map[string]bool{
@@ -33,6 +101,7 @@ func Run() {
 	var excludeHintLabel *walk.Label // 端口排除范围提示条（搜索命中时显示）
 	var killBtn *walk.PushButton
 	var elevateBtn *walk.PushButton
+	var trayIcon *walk.NotifyIcon // 托盘图标（提权重启退出前需摘除，避免幽灵图标）
 
 	// updateExcludeHint 根据搜索框内容判断是否命中 Windows 端口排除范围，
 	// 命中则显示黄色提示条。只对纯数字端口查询触发。
@@ -161,7 +230,20 @@ func Run() {
 			}
 		}
 
-		groupModel.SetRaw(conns) // 内部聚合 + diff + 细粒度发布（98% 情况只发 RowChanged）
+		// 保存滚动位置：walk 的 RowsInserted/Removed handler 在 from<=currentIndex 时
+		// 会调 SetCurrentIndex → LVM_ENSUREVISIBLE 强制滚动，导致用户滚到一半被拉回。
+		// SetRaw 前记下顶项索引，SetRaw 后用 LVM_SCROLL 滚回原位。
+		var savedTop []int
+		if masterTV != nil {
+			savedTop = saveScrollTop(masterTV)
+		}
+
+		groupModel.SetRaw(conns) // 内部聚合 + diff + 细粒度发布
+
+		// 恢复滚动位置（抵消 walk handler 强制的 EnsureVisible）
+		if masterTV != nil && savedTop != nil {
+			restoreScrollTop(masterTV, savedTop)
+		}
 
 		// 只有当选中 PID 有消失时，才需要清理失效选中。
 		// PID 全部保留时绝不调 SetSelectedIndexes——那会清空整表选中态导致闪烁。
@@ -224,7 +306,12 @@ func Run() {
 								walk.MsgBox(mw, "失败", err.Error(), walk.MsgBoxIconError)
 								return
 							}
-							// 重启成功，退出当前进程
+							// 重启成功，退出当前进程。先放行关窗拦截、摘除托盘图标，
+							// 否则旧实例会被 hookCloseButton 藏进托盘残留 / 留幽灵图标。
+							requestRealClose()
+							if trayIcon != nil {
+								trayIcon.Dispose()
+							}
 							mw.Close()
 						},
 					},
@@ -320,8 +407,10 @@ func Run() {
 	go func() { _, _, _ = core.ListExcludedPortRanges() }()
 
 	// 创建托盘图标 + 拦截关闭按钮
-	if _, err := setupTray(mw); err != nil {
+	if ni, err := setupTray(mw); err != nil {
 		log.Printf("托盘创建失败（不影响主功能）: %v", err)
+	} else {
+		trayIcon = ni
 	}
 	hookCloseButton(mw)
 

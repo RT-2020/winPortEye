@@ -8,10 +8,12 @@ import (
 )
 
 // 提权相关 Win32 API。
+// 注意：OpenProcessToken / GetTokenInformation 都是 advapi32.dll 导出的，
+// 不能从 kernel32.dll 取（GetTokenInformation 在 kernel32 里不存在，Call 时会 panic）。
 var (
-	kernel32              = syscall.NewLazyDLL("kernel32.dll")
-	procOpenProcessToken  = kernel32.NewProc("OpenProcessToken")
-	procGetTokenInformation = kernel32.NewProc("GetTokenInformation")
+	advapi32                = syscall.NewLazyDLL("advapi32.dll")
+	procOpenProcessToken    = advapi32.NewProc("OpenProcessToken")
+	procGetTokenInformation = advapi32.NewProc("GetTokenInformation")
 )
 
 const (
@@ -22,12 +24,13 @@ const (
 // 通过 OpenProcessToken + GetTokenInformation(TokenElevation) 判断。
 // 任何 Win32 调用失败都按"未提权"处理（保守，不误判为已提权）。
 func IsElevated() bool {
-	// GetCurrentProcess 返回伪句柄 -1，直接用
+	// GetCurrentProcess 返回伪句柄 -1；64 位下是全宽 0xFFFFFFFFFFFFFFFF，
+	// 传 0xFFFFFFFF 会被当成无效句柄（ERROR_INVALID_HANDLE）导致永远判为未提权。
 	var token syscall.Token
 	// OpenProcessToken(HANDLE ProcessHandle, DWORD DesiredAccess, PHANDLE TokenHandle)
 	ret, _, _ := procOpenProcessToken.Call(
-		uintptr(0xFFFFFFFF), // GetCurrentProcess() 伪句柄
-		uintptr(0x0008),     // TOKEN_QUERY
+		^uintptr(0),     // GetCurrentProcess() 伪句柄
+		uintptr(0x0008), // TOKEN_QUERY
 		uintptr(unsafe.Pointer(&token)),
 	)
 	if ret == 0 {

@@ -5,17 +5,15 @@ package main
 
 import (
 	"os"
-	"runtime/debug"
 
 	"win/internal/mcpserver"
 	"win/internal/ui"
 )
 
 func main() {
-	// 设 64MB 内存软上限：让 Go GC 更积极回收，防止常驻内存随扫描累积膨胀。
-	// 这是软限制（SoftMemoryLimit），不会硬性 OOM——超过时只是 GC 频率提高。
-	// GUI 主程序 + 端口扫描的实际占用远低于此值（实测扫描峰值 <1MB）。
-	debug.SetMemoryLimit(64 << 20)
+	// 注：原先这里设了 debug.SetMemoryLimit(64MB)，但实测会触发频繁 GC 导致
+	// UI 刷新时整片重绘闪烁（GC STW 暂停）。已移除，让 Go 用默认 GOGC 策略。
+	// 实测常驻内存 ~20MB，远低于任何会引起问题的阈值，无需软上限。
 
 	// 检测 --mcp 参数，分流到 MCP server
 	for _, arg := range os.Args[1:] {

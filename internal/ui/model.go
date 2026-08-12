@@ -75,11 +75,31 @@ func (m *PortModel) Sort(col int, order walk.SortOrder) error {
 	return nil
 }
 
-// SetConns 替换端口列表并按当前排序状态重排。主表选中变化时调用。
+// SetConns 替换端口列表并按当前排序状态重排。主表选中变化 / reload 时调用。
+//
+// 防抖：如果新数据与旧数据「内容相同」（长度相等且逐条相等），直接返回不发
+// PublishRowsReset——避免 watcher 每 3 秒 reload 时子表整片重绘闪烁。
+// 只有数据真正变化时才 reset。
 func (m *PortModel) SetConns(conns []core.Connection) {
+	if connsEqual(m.conns, conns) {
+		return // 内容未变，跳过 reset，避免无谓重绘
+	}
 	m.conns = conns
 	m.applySort()
 	m.PublishRowsReset()
+}
+
+// connsEqual 比较两个连接切片是否逐条相等（顺序敏感）。
+func connsEqual(a, b []core.Connection) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for i := range a {
+		if a[i] != b[i] {
+			return false
+		}
+	}
+	return true
 }
 
 // applySort 按当前排序列重排 conns。

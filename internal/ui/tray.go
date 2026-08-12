@@ -84,14 +84,28 @@ func toggleWindow(mw *walk.MainWindow) {
 	}
 }
 
+// realCloseRequested 为 true 时 hookCloseButton 放行，真正退出程序。
+// 目前只有「提权重启」路径会置位（旧实例必须退出，不能藏进托盘残留）。
+var realCloseRequested bool
+
+// requestRealClose 标记下一次关闭为真正退出，绕过关窗拦截。
+func requestRealClose() {
+	realCloseRequested = true
+}
+
 // hookCloseButton 拦截关闭按钮：默认行为改为隐藏到托盘而非退出。
 // 真正退出只能通过托盘菜单的"退出"。
+// 注意：当前版本的 walk 库有缺陷——Closing 事件的 reason 恒为 CloseReasonUnknown
+// （其 form.go 在 WM_CLOSE 处理里先重置 closeReason 再发布事件，WM_SYSCOMMAND
+// SC_CLOSE 置的 CloseReasonUser 会被覆盖），所以这里无法按来源区分，一律拦截；
+// 需要真正退出的路径（提权重启）先调 requestRealClose 放行。
 func hookCloseButton(mw *walk.MainWindow) {
 	mw.Closing().Attach(func(canceled *bool, reason walk.CloseReason) {
-		if reason == walk.CloseReasonUser {
-			*canceled = true
-			mw.Hide()
+		if realCloseRequested {
+			return
 		}
+		*canceled = true
+		mw.Hide()
 	})
 }
 
