@@ -127,7 +127,7 @@ func parseVersionSegments(s string) ([]int, bool) {
 }
 
 // pickAsset 从 Release 资产里挑选下载目标：
-//   - 优先名字以 .zip 结尾的（win.zip 是标准发行物）
+//   - 优先名字以 .zip 结尾的（标准发行物形如 PortEye_vX.Y.Z_win64.zip）
 //   - 其次裸 .exe
 //   - 都无匹配返回 ok=false（调用方按无更新静默）
 func pickAsset(assets []githubAsset) (githubAsset, bool) {

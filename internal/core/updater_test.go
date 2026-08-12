@@ -65,7 +65,7 @@ func newReleasesServer(t *testing.T, tag, body string, assets []githubAsset) *ht
 
 func TestCheckLatestHasUpdate(t *testing.T) {
 	srv := newReleasesServer(t, "v0.3.0", "修复若干问题", []githubAsset{
-		{Name: "win.zip", BrowserDownloadURL: "http://example/win.zip", Size: 12345},
+		{Name: "PortEye_v0.3.1_win64.zip", BrowserDownloadURL: "http://example/PortEye_v0.3.1_win64.zip", Size: 12345},
 		{Name: "porteye.exe", BrowserDownloadURL: "http://example/porteye.exe", Size: 100},
 	})
 	defer srv.Close()
@@ -82,10 +82,10 @@ func TestCheckLatestHasUpdate(t *testing.T) {
 		t.Fatal("应发现更新，got nil")
 	}
 	// 应优先选 .zip 资产
-	if info.AssetName != "win.zip" {
-		t.Errorf("应优先选 win.zip，got %s", info.AssetName)
+	if info.AssetName != "PortEye_v0.3.1_win64.zip" {
+		t.Errorf("应优先选 PortEye_v0.3.1_win64.zip，got %s", info.AssetName)
 	}
-	if info.TagName != "v0.3.0" || info.Size != 12345 || info.DownloadURL != "http://example/win.zip" {
+	if info.TagName != "v0.3.0" || info.Size != 12345 || info.DownloadURL != "http://example/PortEye_v0.3.1_win64.zip" {
 		t.Errorf("info 字段不符: %+v", info)
 	}
 }
@@ -93,7 +93,7 @@ func TestCheckLatestHasUpdate(t *testing.T) {
 func TestCheckLatestNoUpdate(t *testing.T) {
 	// 远端 tag == 当前版本 → (nil, nil)
 	srv := newReleasesServer(t, "v0.2.0", "", []githubAsset{
-		{Name: "win.zip", BrowserDownloadURL: "http://example/win.zip", Size: 1},
+		{Name: "PortEye_v0.3.1_win64.zip", BrowserDownloadURL: "http://example/PortEye_v0.3.1_win64.zip", Size: 1},
 	})
 	defer srv.Close()
 	old := githubLatestURL
@@ -112,7 +112,7 @@ func TestCheckLatestNoUpdate(t *testing.T) {
 func TestCheckLatestRemoteOlder(t *testing.T) {
 	// 远端 tag < 当前版本 → (nil, nil)
 	srv := newReleasesServer(t, "v0.1.0", "", []githubAsset{
-		{Name: "win.zip", BrowserDownloadURL: "http://x", Size: 1},
+		{Name: "PortEye_v0.3.1_win64.zip", BrowserDownloadURL: "http://x", Size: 1},
 	})
 	defer srv.Close()
 	old := githubLatestURL
@@ -128,7 +128,7 @@ func TestCheckLatestRemoteOlder(t *testing.T) {
 func TestCheckLatestNonNumericTagSilent(t *testing.T) {
 	// tag 含预发布标记 → 不可比较 → 按无更新静默 (nil, nil)
 	srv := newReleasesServer(t, "v1.0-beta", "", []githubAsset{
-		{Name: "win.zip", BrowserDownloadURL: "http://x", Size: 1},
+		{Name: "PortEye_v0.3.1_win64.zip", BrowserDownloadURL: "http://x", Size: 1},
 	})
 	defer srv.Close()
 	old := githubLatestURL
