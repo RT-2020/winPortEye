@@ -1,12 +1,10 @@
 package ui
 
 import (
-	"fmt"
-	"os"
+	"win/internal/core"
 
 	"github.com/lxn/walk"
 	"github.com/lxn/win"
-	"golang.org/x/sys/windows/registry"
 )
 
 // setupTray 创建系统托盘图标并绑定交互。
@@ -116,35 +114,11 @@ func hookCloseButton(mw *walk.MainWindow) {
 }
 
 // ---- 开机自启（注册表 HKCU\...\Run）----
+// 注册表读写逻辑已抽到 core（见 core/cleanup.go），此处仅转发，保持托盘菜单
+// 与设置面板调用签名/行为不变。共用方：托盘菜单勾选项、设置面板勾选项、清理本机数据。
 
-const autoStartKey = `Software\Microsoft\Windows\CurrentVersion\Run`
-const autoStartValue = "PortEye"
-
-func setAutoStart(enable bool) error {
-	k, err := registry.OpenKey(registry.CURRENT_USER, autoStartKey, registry.SET_VALUE|registry.QUERY_VALUE)
-	if err != nil {
-		return err
-	}
-	defer k.Close()
-	if enable {
-		exe, err := os.Executable()
-		if err != nil {
-			return err
-		}
-		return k.SetStringValue(autoStartValue, fmt.Sprintf("%q", exe))
-	}
-	return k.DeleteValue(autoStartValue)
-}
-
-func isAutoStart() bool {
-	k, err := registry.OpenKey(registry.CURRENT_USER, autoStartKey, registry.QUERY_VALUE)
-	if err != nil {
-		return false
-	}
-	defer k.Close()
-	_, _, err = k.GetStringValue(autoStartValue)
-	return err == nil
-}
+func setAutoStart(enable bool) error { return core.SetAutoStart(enable) }
+func isAutoStart() bool              { return core.IsAutoStart() }
 
 // loadAppIcon 加载嵌入 exe 的项目图标（RT_GROUP_ICON 资源 ID=1，
 // 由 winres/winres.json 在构建期嵌入）。失败时返回错误，由调用方兜底。

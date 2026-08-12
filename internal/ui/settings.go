@@ -173,6 +173,34 @@ func showSettings(owner walk.Form) {
 								},
 							},
 							Label{Text: "启动时自动加载到托盘，不显示主窗口。", MinSize: Size{Height: 18}},
+							// 清理本机数据区块（与开机自启区块风格一致）
+							Label{Text: " ", MinSize: Size{Height: 6}},
+							Label{Text: "清理软件运行产生的本机数据：", MinSize: Size{Height: 18}},
+							PushButton{
+								Text: "清理本机数据…",
+								OnClicked: func() {
+									// 确认框：列出将删除的内容，强调不删 exe 本体
+									msg := "将删除以下内容：\n" +
+										"  • %APPDATA%\\PortEye 日志目录\n" +
+										"  • 开机自启项\n" +
+										"  • 更新下载残留文件\n" +
+										"  • 临时更新脚本\n\n" +
+										"程序本体不会被删除。\n\n是否继续？"
+									if walk.MsgBox(dlg, "清理本机数据", msg,
+										walk.MsgBoxYesNo|walk.MsgBoxIconWarning) != walk.DlgCmdYes {
+										return
+									}
+									// 磁盘 IO 较快，同步执行（参照更新按钮同线程模型）
+									dir, err := exeDir()
+									if err != nil {
+										walk.MsgBox(dlg, "清理失败", "无法定位程序目录: "+err.Error(), walk.MsgBoxIconError)
+										return
+									}
+									r := core.CleanupLocalData(dir)
+									walk.MsgBox(dlg, "清理完成", formatCleanupResult(r), walk.MsgBoxIconInformation)
+								},
+							},
+							Label{Text: "（不删除程序本体；如需卸载，直接删除软件所在目录即可）", MinSize: Size{Height: 18}},
 						},
 					},
 					// —— Tab 4: 关于 ——
@@ -212,4 +240,41 @@ func showSettings(owner walk.Form) {
 	}
 
 	dlg.Run()
+}
+
+// formatCleanupResult 把 CleanupResult 格式化成结果弹窗文案。
+// 成功项标 ✓，无残留项标 ·，失败项连同原因列出（✗），结尾给出卸载提示。
+func formatCleanupResult(r core.CleanupResult) string {
+	var sb strings.Builder
+	switch {
+	case r.LogDirRemoved:
+		sb.WriteString("✓ 日志目录已清理\n")
+	case r.LogDirAbsent:
+		sb.WriteString("· 无日志需清理\n")
+	default:
+		sb.WriteString("✗ 日志目录未清理\n")
+	}
+	if r.AutoStartRemoved {
+		sb.WriteString("✓ 开机自启已关闭\n")
+	} else {
+		sb.WriteString("✗ 开机自启未关闭\n")
+	}
+	if len(r.UpdateFilesRemoved) > 0 {
+		sb.WriteString(fmt.Sprintf("✓ 更新残留已删 %d 个文件\n", len(r.UpdateFilesRemoved)))
+	} else {
+		sb.WriteString("· 无更新残留需清理\n")
+	}
+	if len(r.TempBatsRemoved) > 0 {
+		sb.WriteString(fmt.Sprintf("✓ 临时脚本已删 %d 个\n", len(r.TempBatsRemoved)))
+	} else {
+		sb.WriteString("· 无临时脚本需清理\n")
+	}
+	if len(r.Errors) > 0 {
+		sb.WriteString("\n失败项：\n")
+		for _, e := range r.Errors {
+			sb.WriteString("✗ " + e + "\n")
+		}
+	}
+	sb.WriteString("\n如需卸载，直接删除软件所在目录即可。")
+	return sb.String()
 }

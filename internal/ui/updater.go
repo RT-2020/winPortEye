@@ -22,13 +22,15 @@ import (
 )
 
 // 更新物料文件名（均落在 exe 同目录，加 _update 后缀避免与运行中 exe 同名冲突）。
+// 值统一来自 core（见 core/cleanup.go 的导出常量），消除跨包重复定义——
+// 改名/契约变更只需改 core 一处。
 const (
-	updateSidecarName  = "porteye_update.version"          // 内容：一行 tag，标记"已下载就绪"
-	updateExeName      = "porteye_update.exe"              // 解压出的待替换主程序
-	updateManifestName = "porteye_update.exe.manifest"     // 解压出的待替换 manifest
-	updateZipName      = "porteye_update.zip"              // 下载完成的完整 zip
-	updatePartName     = "porteye_update.zip.part"         // 下载中的临时分片
-	tooltipMaxRunes    = 800                                // changelog 截断长度（walk tooltip 上限 1023 UTF-16）
+	updateSidecarName  = core.UpdateSidecarName
+	updateExeName      = core.UpdateExeName
+	updateManifestName = core.UpdateManifestName
+	updateZipName      = core.UpdateZipName
+	updatePartName     = core.UpdatePartName
+	tooltipMaxRunes    = 800 // changelog 截断长度（walk tooltip 上限 1023 UTF-16）
 )
 
 // updaterController 封装更新按钮的全部交互状态。
