@@ -4,6 +4,18 @@
 
 格式基于 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)，版本号遵循[语义化版本](https://semver.org/lang/zh-CN/)。
 
+## [0.3.1] - 2026-08-12
+
+### 新增
+
+- **PortEye Logo「端口之眼」**：深蓝渐变圆角底 + 虹膜环形端口（6 青 2 暗，暗色代表空闲口）+ 瞳孔网络节点高光；exe 文件图标、任务栏、窗口、系统托盘全部启用
+- exe 嵌入版本信息（`ProductVersion`、`FileDescription "PortEye 端口之眼"` 等），文件属性中可见
+
+### 其他
+
+- 托盘图标从 shell32 系统默认图标改为项目图标（加载失败自动回退系统图标）
+- 图标资源经 go-winres 嵌入，manifest 保持外置不变
+
 ## [0.3.0] - 2026-08-12
 
 ### 新增
@@ -61,6 +73,7 @@
 - 托盘常驻：最小化到托盘、开机自启、后台轮询
 - 单文件 exe，绿色免安装
 
+[0.3.1]: https://github.com/RT-2020/winPortEye/compare/v0.3.0...v0.3.1
 [0.3.0]: https://github.com/RT-2020/winPortEye/compare/v0.2.1...v0.3.0
 [0.2.1]: https://github.com/RT-2020/winPortEye/compare/v0.2.0...v0.2.1
 [0.2.0]: https://github.com/RT-2020/winPortEye/compare/v0.1.0...v0.2.0
