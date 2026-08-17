@@ -4,6 +4,8 @@ import (
 	"archive/zip"
 	"bytes"
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"net/http"
@@ -65,7 +67,7 @@ func newReleasesServer(t *testing.T, tag, body string, assets []githubAsset) *ht
 
 func TestCheckLatestHasUpdate(t *testing.T) {
 	srv := newReleasesServer(t, "v0.3.0", "修复若干问题", []githubAsset{
-		{Name: "PortEye_v0.3.1_win64.zip", BrowserDownloadURL: "http://example/PortEye_v0.3.1_win64.zip", Size: 12345},
+		{Name: "PortEye_v0.3.1_win64.zip", BrowserDownloadURL: "http://example/PortEye_v0.3.1_win64.zip", Size: 12345, Digest: "sha256:deadbeef"},
 		{Name: "porteye.exe", BrowserDownloadURL: "http://example/porteye.exe", Size: 100},
 	})
 	defer srv.Close()
@@ -87,6 +89,9 @@ func TestCheckLatestHasUpdate(t *testing.T) {
 	}
 	if info.TagName != "v0.3.0" || info.Size != 12345 || info.DownloadURL != "http://example/PortEye_v0.3.1_win64.zip" {
 		t.Errorf("info 字段不符: %+v", info)
+	}
+	if info.Digest != "sha256:deadbeef" {
+		t.Errorf("Digest 应透传资产 digest，got %q", info.Digest)
 	}
 }
 
@@ -217,7 +222,7 @@ func TestDownloadOK(t *testing.T) {
 	dest := filepath.Join(t.TempDir(), "dl.part")
 	var lastDone int64
 	var reportedTotal int64
-	err := Download(context.Background(), srv.Client(), srv.URL, dest, int64(len(body)), func(done, total int64) {
+	err := Download(context.Background(), srv.Client(), srv.URL, dest, int64(len(body)), "", func(done, total int64) {
 		lastDone = done
 		reportedTotal = total
 	})
@@ -244,12 +249,19 @@ func TestDownloadSizeMismatch(t *testing.T) {
 
 	dest := filepath.Join(t.TempDir(), "dl.part")
 	// 期望 999 字节，实际 5 → 应报错
-	err := Download(context.Background(), srv.Client(), srv.URL, dest, 999, nil)
+	err := Download(context.Background(), srv.Client(), srv.URL, dest, 999, "", nil)
 	if err == nil {
 		t.Fatal("大小不符应报错")
 	}
 	if !strings.Contains(err.Error(), "不符") {
 		t.Errorf("错误信息应含\"不符\"，got %v", err)
+	}
+	if !strings.Contains(err.Error(), "已清除损坏缓存") {
+		t.Errorf("错误信息应注明已清除损坏缓存，got %v", err)
+	}
+	// 校验失败后 part 应被删除，防止续传机制复用损坏缓存
+	if _, statErr := os.Stat(dest); !os.IsNotExist(statErr) {
+		t.Errorf("大小校验失败后 part 应被删除，stat err=%v", statErr)
 	}
 }
 
@@ -273,9 +285,133 @@ func TestDownloadContextCancel(t *testing.T) {
 		cancel()
 	}()
 	dest := filepath.Join(t.TempDir(), "dl.part")
-	err := Download(ctx, srv.Client(), srv.URL, dest, 0, nil)
+	err := Download(ctx, srv.Client(), srv.URL, dest, 0, "", nil)
 	if err == nil {
 		t.Fatal("ctx 取消应导致下载报错")
+	}
+}
+
+// ---- 断点续传 / 哈希校验 ----
+
+// newRangeServer 构造支持 Range 的 httptest 服务器：
+// 带 "bytes=N-" 头 → 206 从 N 起返回；否则 → 200 全量（模拟不支持续传的服务器）。
+func newRangeServer(t *testing.T, body []byte) *httptest.Server {
+	t.Helper()
+	return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if rng := r.Header.Get("Range"); strings.HasPrefix(rng, "bytes=") {
+			var start int64
+			if _, err := fmt.Sscanf(rng, "bytes=%d-", &start); err == nil && start > 0 && start < int64(len(body)) {
+				w.Header().Set("Content-Range", fmt.Sprintf("bytes %d-%d/%d", start, len(body)-1, len(body)))
+				w.WriteHeader(http.StatusPartialContent)
+				_, _ = w.Write(body[start:])
+				return
+			}
+		}
+		_, _ = w.Write(body)
+	}))
+}
+
+func TestDownloadResume206(t *testing.T) {
+	// part 已有前 100 字节 → 应带 Range 续传，最终拼成完整内容
+	body := bytes.Repeat([]byte("B"), 4096)
+	srv := newRangeServer(t, body)
+	defer srv.Close()
+
+	dest := filepath.Join(t.TempDir(), "dl.part")
+	if err := os.WriteFile(dest, body[:100], 0644); err != nil {
+		t.Fatal(err)
+	}
+	var lastDone int64
+	var reportedTotal int64
+	err := Download(context.Background(), srv.Client(), srv.URL, dest, int64(len(body)), "", func(done, total int64) {
+		lastDone = done
+		reportedTotal = total
+	})
+	if err != nil {
+		t.Fatalf("续传下载失败: %v", err)
+	}
+	got, _ := os.ReadFile(dest)
+	if !bytes.Equal(got, body) {
+		t.Errorf("续传后内容不符: got %d bytes, want %d", len(got), len(body))
+	}
+	if reportedTotal != int64(len(body)) {
+		t.Errorf("进度 total 应=%d，got %d", len(body), reportedTotal)
+	}
+	if lastDone != int64(len(body)) {
+		t.Errorf("进度最终 done 应=%d（从已有字节起算），got %d", len(body), lastDone)
+	}
+}
+
+func TestDownloadOverwrite200(t *testing.T) {
+	// 服务器无视 Range 恒回 200（不支持续传）→ 应覆盖重写，而非在旧内容后追加
+	body := bytes.Repeat([]byte("C"), 2048)
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write(body)
+	}))
+	defer srv.Close()
+
+	dest := filepath.Join(t.TempDir(), "dl.part")
+	if err := os.WriteFile(dest, []byte("garbage stale part"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	err := Download(context.Background(), srv.Client(), srv.URL, dest, int64(len(body)), "", nil)
+	if err != nil {
+		t.Fatalf("覆盖下载失败: %v", err)
+	}
+	got, _ := os.ReadFile(dest)
+	if !bytes.Equal(got, body) {
+		t.Errorf("200 应覆盖为完整内容，got %d bytes (%q...)", len(got), got[:20])
+	}
+}
+
+func TestDownloadDigestMatch(t *testing.T) {
+	body := bytes.Repeat([]byte("D"), 1024)
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write(body)
+	}))
+	defer srv.Close()
+
+	sum := sha256.Sum256(body)
+	digest := "sha256:" + hex.EncodeToString(sum[:])
+	dest := filepath.Join(t.TempDir(), "dl.part")
+	if err := Download(context.Background(), srv.Client(), srv.URL, dest, int64(len(body)), digest, nil); err != nil {
+		t.Fatalf("digest 匹配应成功: %v", err)
+	}
+}
+
+func TestDownloadDigestMismatch(t *testing.T) {
+	body := bytes.Repeat([]byte("E"), 1024)
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write(body)
+	}))
+	defer srv.Close()
+
+	dest := filepath.Join(t.TempDir(), "dl.part")
+	// 错误 digest（全 0）→ 哈希校验应失败
+	err := Download(context.Background(), srv.Client(), srv.URL, dest, int64(len(body)), "sha256:"+strings.Repeat("0", 64), nil)
+	if err == nil {
+		t.Fatal("digest 不匹配应报错")
+	}
+	if !strings.Contains(err.Error(), "SHA-256") {
+		t.Errorf("错误信息应含 SHA-256，got %v", err)
+	}
+	// 校验失败后 part 应被删除
+	if _, statErr := os.Stat(dest); !os.IsNotExist(statErr) {
+		t.Errorf("哈希校验失败后 part 应被删除，stat err=%v", statErr)
+	}
+}
+
+func TestDownloadDigestEmptySkipsHash(t *testing.T) {
+	// digest 为空 → 跳过哈希只验大小（现状语义），内容不符也不报哈希错
+	body := bytes.Repeat([]byte("F"), 512)
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write(body)
+	}))
+	defer srv.Close()
+
+	dest := filepath.Join(t.TempDir(), "dl.part")
+	if err := Download(context.Background(), srv.Client(), srv.URL, dest, int64(len(body)), "", nil); err != nil {
+		t.Fatalf("digest 为空应跳过哈希: %v", err)
 	}
 }
 

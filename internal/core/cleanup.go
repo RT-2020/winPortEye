@@ -8,6 +8,7 @@
 //   - 开机自启注册表值（仅开过自启才有；HKCU\...\Run\PortEye）
 //   - exe 同目录更新下载残留五件套（见本文件常量）
 //   - %TEMP%\porteye_update_*.bat 更新脚本残留（见 updater.go WriteUpdateScript）
+//   - %TEMP%\PortEye 临时工作目录（TempWorkDirPath；整个目录树）
 //
 // 逐项容错：单个失败（如日志文件正被本进程占用、exe 目录不可写）记入 Errors，
 // 不阻断其他项。返回结果如实反映每类删除成功与否——是否算"验收通过"由 UI 层判定。
@@ -38,14 +39,25 @@ const (
 	AutoStartValue = "PortEye"
 )
 
+// TempWorkDirName 是 %TEMP% 下 PortEye 临时工作目录名。
+const TempWorkDirName = "PortEye"
+
+// TempWorkDirPath 返回临时工作目录完整路径：%TEMP%\PortEye。
+// 供更新/解压等临时文件使用；CleanupLocalData 整体删除该目录。
+func TempWorkDirPath() string {
+	return filepath.Join(os.TempDir(), TempWorkDirName)
+}
+
 // CleanupResult 汇总 CleanupLocalData 的逐项结果。
 // 每类删除成功与否单独记录，单个失败不阻断整体（错误进 Errors）。
 type CleanupResult struct {
 	LogDirRemoved      bool     // 日志目录存在且已删除
-	LogDirAbsent       bool     // 日志目录本就不存在（无日志需清理，与其他三类"无残留"口径对齐）
+	LogDirAbsent       bool     // 日志目录本就不存在（无日志需清理，与其他各类"无残留"口径对齐）
 	AutoStartRemoved   bool     // 开机自启注册表值是否已删（本就无值视作 true）
 	UpdateFilesRemoved []string // 成功删除的 exe 目录更新残留文件名
 	TempBatsRemoved    []string // 成功删除的 TEMP 更新脚本文件名
+	TempWorkDirRemoved bool     // 临时工作目录存在且已删除
+	TempWorkDirAbsent  bool     // 临时工作目录本就不存在（与 LogDirAbsent 口径一致）
 	Errors             []string // 逐项失败原因（含"正在使用中"类共享冲突）
 }
 
@@ -149,6 +161,21 @@ func CleanupLocalData(exeDir string) CleanupResult {
 			continue
 		}
 		r.TempBatsRemoved = append(r.TempBatsRemoved, filepath.Base(b))
+	}
+
+	// 5. 临时工作目录：%TEMP%\PortEye（整个目录树，口径与日志目录一致：
+	//    不存在 → TempWorkDirAbsent，不把 RemoveAll 对不存在路径的 nil 当作"已清理"）
+	switch _, err := os.Stat(TempWorkDirPath()); {
+	case os.IsNotExist(err):
+		r.TempWorkDirAbsent = true
+	case err != nil:
+		r.Errors = append(r.Errors, "临时工作目录检查失败: "+err.Error())
+	default:
+		if err := os.RemoveAll(TempWorkDirPath()); err != nil {
+			r.Errors = append(r.Errors, "临时工作目录清理失败（可能正在使用中）: "+err.Error())
+		} else {
+			r.TempWorkDirRemoved = true
+		}
 	}
 
 	return r

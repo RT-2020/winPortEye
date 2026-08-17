@@ -13,6 +13,8 @@ package core
 import (
 	"archive/zip"
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -35,6 +37,7 @@ type UpdateInfo struct {
 	DownloadURL string // 资产 browser_download_url
 	AssetName   string // 资产文件名（用于判断 .zip / .exe）
 	Size        int64  // 资产字节数
+	Digest      string // 资产 SHA-256（GitHub API 格式 "sha256:<hex>"；老资产可能为空）
 }
 
 // githubRelease / githubAsset 仅用于解析 GitHub Releases API 的 JSON 响应。
@@ -48,6 +51,7 @@ type githubAsset struct {
 	Name               string `json:"name"`
 	BrowserDownloadURL string `json:"browser_download_url"`
 	Size               int64  `json:"size"`
+	Digest             string `json:"digest"`
 }
 
 // versionNonComparable 是 CompareVersions 的哨兵返回值，表示版本号含非数字段
@@ -191,41 +195,79 @@ func CheckLatest(client *http.Client, currentVersion string) (*UpdateInfo, error
 		DownloadURL: asset.BrowserDownloadURL,
 		AssetName:   asset.Name,
 		Size:        asset.Size,
+		Digest:      asset.Digest,
 	}, nil
 }
 
 // Download 把 url 内容下载到 destPart 文件，并周期性回调进度。
 //
+// 断点续传：destPart 已存在且 0<size<expectedSize 时，带 Range 头从已有字节续传
+// （服务器回 206 则追加写；回 200 则覆盖重写）。非 200/206 的 HTTP 错误
+// 保留 part 文件（续传可复用），由调用方决定重试或放弃。
+//
+// 完整性校验（落盘后）：
+//   - expectedDigest 非空且前缀 "sha256:" → 对完整落盘文件算 SHA-256，与 digest 比对，
+//     不符报错「下载校验失败（SHA-256 不匹配）」
+//   - expectedDigest 为空 → 跳过哈希，只验大小（现状语义）
+//   - 大小不符或哈希不符 → 先删除 destPart 再返回错误（错误注明已清除损坏缓存），
+//     防止损坏的 part 被续传机制永久复用
+//
+// 进度回调：done = 已有字节 + 本次已写；total = expectedSize（>0 时），
+// 否则退化为 已有字节+ContentLength（仍 ≤0 则 0，调用方按不定长显示）。
+//
 // 超时策略（针对国内访问 GitHub 慢）：
 //   - 不设总超时（大文件 + 慢链路不应被误杀）
 //   - 用 ctx 做取消（调用方在进程退出/用户放弃时取消）
 //   - Transport.ResponseHeaderTimeout（调用方在 client 上配 ≤15s）兜住「连上但首字节不来」
-//
-// 写完后若 expectedSize>0，校验落盘字节数一致，不符报错（防止半截下载被当成功）。
-func Download(ctx context.Context, client *http.Client, url, destPart string, expectedSize int64, onProgress func(done, total int64)) error {
+func Download(ctx context.Context, client *http.Client, url, destPart string, expectedSize int64, expectedDigest string, onProgress func(done, total int64)) error {
+	// 断点续传判定：part 已存在且 0<size<expectedSize
+	base := int64(0)
+	resume := false
+	if expectedSize > 0 {
+		if fi, err := os.Stat(destPart); err == nil && fi.Size() > 0 && fi.Size() < expectedSize {
+			base = fi.Size()
+			resume = true
+		}
+	}
+
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
 	if err != nil {
 		return err
 	}
 	req.Header.Set("User-Agent", "PortEye-Updater")
+	if resume {
+		req.Header.Set("Range", fmt.Sprintf("bytes=%d-", base))
+	}
 
 	resp, err := client.Do(req)
 	if err != nil {
 		return err
 	}
 	defer resp.Body.Close()
-	if resp.StatusCode != http.StatusOK {
+
+	var f *os.File
+	switch resp.StatusCode {
+	case http.StatusOK:
+		// 无 Range 或服务器不支持续传 → 覆盖重写
+		f, err = os.Create(destPart)
+		base = 0
+	case http.StatusPartialContent:
+		// 续传命中 → 追加写
+		f, err = os.OpenFile(destPart, os.O_WRONLY|os.O_APPEND, 0)
+	default:
+		// 非 200/206：报错并保留 part（续传可复用）
 		return fmt.Errorf("下载返回状态 %d", resp.StatusCode)
 	}
-
-	f, err := os.Create(destPart)
 	if err != nil {
 		return fmt.Errorf("创建下载文件失败: %w", err)
 	}
 
-	total := resp.ContentLength
+	total := expectedSize
 	if total <= 0 {
-		total = expectedSize // 服务器未返回 Content-Length 时退回预期值
+		total = base + resp.ContentLength
+		if total <= 0 {
+			total = 0
+		}
 	}
 	written := int64(0)
 	buf := make([]byte, 32*1024)
@@ -243,7 +285,7 @@ func Download(ctx context.Context, client *http.Client, url, destPart string, ex
 			}
 			written += int64(n)
 			if onProgress != nil {
-				onProgress(written, total)
+				onProgress(base+written, total)
 			}
 		}
 		if rerr == io.EOF {
@@ -258,17 +300,41 @@ func Download(ctx context.Context, client *http.Client, url, destPart string, ex
 		return fmt.Errorf("关闭下载文件失败: %w", err)
 	}
 
+	// 哈希校验（对完整落盘文件）：digest 非空且为 GitHub 的 "sha256:<hex>" 格式才校验
+	if expectedDigest != "" && strings.HasPrefix(expectedDigest, "sha256:") {
+		if !verifySha256(destPart, strings.TrimPrefix(expectedDigest, "sha256:")) {
+			_ = os.Remove(destPart) // 防损坏 part 被续传机制永久复用
+			return fmt.Errorf("下载校验失败（SHA-256 不匹配），已清除损坏缓存，可重试")
+		}
+	}
+
 	// 大小校验：防止截断/重定向到错误页面被当成功
 	if expectedSize > 0 {
 		fi, err := os.Stat(destPart)
 		if err != nil {
+			_ = os.Remove(destPart)
 			return fmt.Errorf("校验下载文件失败: %w", err)
 		}
 		if fi.Size() != expectedSize {
-			return fmt.Errorf("下载大小不符：期望 %d 字节，实际 %d 字节", expectedSize, fi.Size())
+			_ = os.Remove(destPart) // 防损坏 part 被续传机制永久复用
+			return fmt.Errorf("下载大小不符：期望 %d 字节，实际 %d 字节，已清除损坏缓存，可重试", expectedSize, fi.Size())
 		}
 	}
 	return nil
+}
+
+// verifySha256 计算文件的 SHA-256 并与期望 hex（大小写不敏感）比对。
+func verifySha256(path, wantHex string) bool {
+	f, err := os.Open(path)
+	if err != nil {
+		return false
+	}
+	defer f.Close()
+	h := sha256.New()
+	if _, err := io.Copy(h, f); err != nil {
+		return false
+	}
+	return strings.EqualFold(hex.EncodeToString(h.Sum(nil)), wantHex)
 }
 
 // ExtractUpdate 从 zipPath 解出 porteye.exe 与 porteye.exe.manifest 到 destDir。

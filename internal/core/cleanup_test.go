@@ -77,13 +77,20 @@ func TestCleanupLocalData(t *testing.T) {
 		}
 	}
 
-	// --- 准备临时 TEMP + porteye_update_*.bat ---
+	// --- 准备临时 TEMP + porteye_update_*.bat + PortEye 工作目录 ---
 	tmpTemp := t.TempDir()
 	t.Setenv("TMP", tmpTemp) // os.TempDir() 在 Windows 经 GetTempPathW 读 TMP
 	t.Setenv("TEMP", tmpTemp)
 	batName := "porteye_update_99999.bat"
 	batPath := filepath.Join(tmpTemp, batName)
 	if err := os.WriteFile(batPath, []byte("echo hi"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	workDir := filepath.Join(tmpTemp, TempWorkDirName)
+	if err := os.MkdirAll(filepath.Join(workDir, "sub"), 0755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(workDir, "sub", "tmp.bin"), []byte("x"), 0644); err != nil {
 		t.Fatal(err)
 	}
 
@@ -125,6 +132,14 @@ func TestCleanupLocalData(t *testing.T) {
 		t.Errorf("临时脚本 %s 应已删除，stat err=%v", batPath, err)
 	}
 
+	// 断言 3.5：TEMP 工作目录整个已删（TempWorkDirRemoved=true，TempWorkDirAbsent=false）
+	if !r.TempWorkDirRemoved || r.TempWorkDirAbsent {
+		t.Errorf("TempWorkDirRemoved 应为 true（TempWorkDirAbsent 应为 false），errors=%v", r.Errors)
+	}
+	if _, err := os.Stat(workDir); !os.IsNotExist(err) {
+		t.Errorf("临时工作目录应已删除，stat err=%v", err)
+	}
+
 	// 断言 4：注册表（仅在成功开自启时校验）
 	if wantRegCheck {
 		if !r.AutoStartRemoved {
@@ -154,6 +169,9 @@ func TestCleanupLocalData_NoSidecarFiles(t *testing.T) {
 	}
 	if !r.LogDirAbsent || r.LogDirRemoved {
 		t.Errorf("空 APPDATA 应 LogDirAbsent=true，got removed=%v absent=%v", r.LogDirRemoved, r.LogDirAbsent)
+	}
+	if !r.TempWorkDirAbsent || r.TempWorkDirRemoved {
+		t.Errorf("空 TEMP 应 TempWorkDirAbsent=true，got removed=%v absent=%v", r.TempWorkDirRemoved, r.TempWorkDirAbsent)
 	}
 	// 不应因"文件/目录不存在"产生错误
 	for _, e := range r.Errors {

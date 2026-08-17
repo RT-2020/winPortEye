@@ -10,6 +10,7 @@ package ui
 import (
 	"context"
 	"fmt"
+	"log"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -21,7 +22,8 @@ import (
 	"github.com/lxn/walk"
 )
 
-// 更新物料文件名（均落在 exe 同目录，加 _update 后缀避免与运行中 exe 同名冲突）。
+// 更新物料文件名（下载/解压均落在 %TEMP%\PortEye 工作目录，加 _update 后缀避免
+// 与运行中 exe 同名冲突；sidecar 仍写 exe 目录）。
 // 值统一来自 core（见 core/cleanup.go 的导出常量），消除跨包重复定义——
 // 改名/契约变更只需改 core 一处。
 const (
@@ -81,14 +83,16 @@ func (uc *updaterController) start() {
 //     - 用户选"立即" → 重启替换
 //     - 用户选"稍后" → 继续查远端，若远端比已下载版本更新则丢弃旧物走新流程
 //  2. sidecar 不完整/无效 → 清理孤儿残留（不提示）
-//  3. 静默检查远端，有更新则显示按钮
+//  3. 远端检查前先过节流闸（ShouldSkipRemoteCheck），未到节流间隔则跳过
 func (uc *updaterController) checkAndUpdate() {
 	dir, err := exeDir()
 	if err != nil {
 		return // 无法定位 exe 目录，更新无从谈起，静默
 	}
 	sidecarPath := filepath.Join(dir, updateSidecarName)
-	updateExePath := filepath.Join(dir, updateExeName)
+	// 待装 exe 在 TEMP 工作目录（下载物料已迁 TEMP，与 performRestartUpdate 同源；
+	// 若仍查 exe 目录会因 Stat 落空误判 sidecar 失效并清掉物料）
+	updateExePath := filepath.Join(core.TempWorkDirPath(), updateExeName)
 
 	// 1. 优先处理已就绪的 sidecar 更新（上次下载完成但用户选了"稍后"）
 	if tag, ok := readSidecar(sidecarPath); ok {
@@ -99,8 +103,11 @@ func (uc *updaterController) checkAndUpdate() {
 				uc.mw.Synchronize(func() { _ = uc.performRestartUpdate() })
 				return // 进程即将退出
 			}
-			// 用户选稍后：查远端是否比已下载版本更新
-			info, _ := core.CheckLatest(uc.checkClient, uc.version)
+			// 用户选稍后：查远端是否比已下载版本更新（成功即记录，节流后续远端检查）
+			info, err := core.CheckLatest(uc.checkClient, uc.version)
+			if err == nil {
+				core.RecordCheck(info != nil)
+			}
 			if info != nil && core.CompareVersions(info.TagName, tag) == 1 {
 				// 远端更新 → 丢弃旧下载物，按新版本走完整流程
 				uc.cleanupStaleDownloads(dir)
@@ -114,8 +121,15 @@ func (uc *updaterController) checkAndUpdate() {
 	// 2. sidecar 不完整/无效/已过时 → 清理孤儿残留（绝不提示用户）
 	uc.cleanupStaleDownloads(dir)
 
-	// 3. 静默检查远端
+	// 3. 远端检查前过节流闸：刚检查过（含刚确认无更新）则本次跳过
+	if core.ShouldSkipRemoteCheck() {
+		return
+	}
 	info, err := core.CheckLatest(uc.checkClient, uc.version)
+	if err == nil {
+		// 检查成功才记录（网络失败不记录，避免把故障当"已确认无更新"）
+		core.RecordCheck(info != nil)
+	}
 	if err != nil || info == nil {
 		return // 无网/限流/已最新/解析失败 一律静默
 	}
@@ -148,9 +162,16 @@ func (uc *updaterController) onButtonClicked() {
 	uc.btn.SetEnabled(false)
 	uc.btn.SetText("下载中… 0%")
 
+	// 下载/解压物料落 TEMP 工作目录（避免污染 exe 目录；sidecar 仍写 exe 目录）
+	tempDir := core.TempWorkDirPath()
+	if err := os.MkdirAll(tempDir, 0755); err != nil {
+		uc.failDownload(info, "创建更新工作目录失败："+err.Error())
+		return
+	}
+
 	go func() {
-		partPath := filepath.Join(dir, updatePartName)
-		err := core.Download(uc.ctx, uc.downloadClient, info.DownloadURL, partPath, info.Size,
+		partPath := filepath.Join(tempDir, updatePartName)
+		err := core.Download(uc.ctx, uc.downloadClient, info.DownloadURL, partPath, info.Size, info.Digest,
 			func(done, total int64) {
 				uc.mw.Synchronize(func() {
 					if total > 0 {
@@ -170,21 +191,21 @@ func (uc *updaterController) onButtonClicked() {
 		}
 
 		// 下载完成：rename .part → .zip
-		zipPath := filepath.Join(dir, updateZipName)
+		zipPath := filepath.Join(tempDir, updateZipName)
 		_ = os.Remove(zipPath) // 覆盖可能残留的旧 zip
 		if err := os.Rename(partPath, zipPath); err != nil {
 			uc.failDownload(info, "整理下载文件失败："+err.Error())
 			return
 		}
 		// 解压校验
-		if _, _, err := core.ExtractUpdate(zipPath, dir); err != nil {
+		if _, _, err := core.ExtractUpdate(zipPath, tempDir); err != nil {
 			uc.failDownload(info, "解压更新包失败："+err.Error())
 			return
 		}
-		// 最后写 sidecar：只有解压校验通过才标记"就绪"，避免半成品被当可装
+		// 最后写 sidecar（exe 目录）：只有解压校验通过才标记"就绪"，避免半成品被当可装。
+		// 写失败不阻断——立即安装路径仍可用，仅下次启动不再提示。
 		if err := os.WriteFile(filepath.Join(dir, updateSidecarName), []byte(info.TagName), 0644); err != nil {
-			uc.failDownload(info, "记录更新就绪状态失败："+err.Error())
-			return
+			log.Printf("写入更新就绪标记失败（不影响立即安装）: %v", err)
 		}
 
 		// 弹时机选择窗（在 UI 线程）
@@ -242,8 +263,7 @@ func (uc *updaterController) promptInstallReady(tag string) bool {
 // 退出序列与「以管理员重启」按钮一致（window.go:312）：requestRealClose + 摘托盘 + mw.Close，
 // 否则旧实例会被 hookCloseButton 藏进托盘不死，bat 永远等不到 PID 退出。
 func (uc *updaterController) performRestartUpdate() error {
-	dir, err := exeDir()
-	if err != nil {
+	if _, err := exeDir(); err != nil {
 		walk.MsgBox(uc.mw, "更新失败", "无法定位程序目录："+err.Error(), walk.MsgBoxIconError)
 		return err
 	}
@@ -252,8 +272,9 @@ func (uc *updaterController) performRestartUpdate() error {
 		walk.MsgBox(uc.mw, "更新失败", "无法获取当前程序路径："+err.Error(), walk.MsgBoxIconError)
 		return err
 	}
-	newExe := filepath.Join(dir, updateExeName)
-	newManifest := filepath.Join(dir, updateManifestName)
+	// 待替换物料在 TEMP 工作目录（与下载/解压路径同源）
+	newExe := filepath.Join(core.TempWorkDirPath(), updateExeName)
+	newManifest := filepath.Join(core.TempWorkDirPath(), updateManifestName)
 
 	batPath, err := core.WriteUpdateScript(os.Getpid(), oldExe, newExe, newManifest)
 	if err != nil {
@@ -277,7 +298,8 @@ func (uc *updaterController) performRestartUpdate() error {
 	return nil
 }
 
-// cleanupStaleDownloads 删除 exe 同目录的全部更新残留（孤儿 .exe/.manifest/.version/.zip/.part）。
+// cleanupStaleDownloads 删除 exe 同目录的全部更新残留（孤儿 .exe/.manifest/.version/.zip/.part），
+// 并清理 TEMP 更新工作目录（逐个删五件套后移除空目录，错误一律忽略）。
 // 用于 sidecar 不完整或更新已完成的清理，绝不提示用户。
 func (uc *updaterController) cleanupStaleDownloads(dir string) {
 	for _, name := range []string{
@@ -285,6 +307,14 @@ func (uc *updaterController) cleanupStaleDownloads(dir string) {
 	} {
 		_ = os.Remove(filepath.Join(dir, name))
 	}
+	// TEMP 工作目录：删五件套后移除空目录（目录非空/被占用时忽略错误）
+	tempDir := core.TempWorkDirPath()
+	for _, name := range []string{
+		updateExeName, updateManifestName, updateSidecarName, updateZipName, updatePartName,
+	} {
+		_ = os.Remove(filepath.Join(tempDir, name))
+	}
+	_ = os.Remove(tempDir)
 }
 
 // ---- 辅助函数 ----
