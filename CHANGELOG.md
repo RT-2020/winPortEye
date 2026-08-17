@@ -4,6 +4,27 @@
 
 格式基于 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)，版本号遵循[语义化版本](https://semver.org/lang/zh-CN/)。
 
+## [0.3.2] - 2026-08-17
+
+### 修复
+
+- **「复制配置」按钮粘贴出旧内容**：原实现用 walk 库的剪贴板 API，其 `OpenClipboard` 后不 `EmptyClipboard`，导致旧格式（ANSI）数据残留，部分程序粘贴到的是上一次复制的内容。改为直接调 Win32 API 原子写入，同时写入 UTF-16 与 ANSI 两种格式
+
+### 新增
+
+- **更新检查节流**：24 小时内只做一次真实远端检查（状态存 `%APPDATA%\PortEye\updater.json`）；发现新版本不节流，网络失败不记录（避免把故障当「已确认无更新」）
+- **下载可靠性**：断点续传（Range 头）；SHA-256 完整性校验（GitHub API 提供摘要）；损坏的半成品自动清除，不被续传机制复用
+- **更新物料迁移**：下载/解压全部落到 `%TEMP%\PortEye` 工作目录，程序目录只读也能更新；清理本机数据同步新增该目录的清理
+- **端口排除范围检测支持 IPv6**：IPv6 尽力查询（失败静默跳过），命中时按「IPv4/IPv6 + TCP/UDP」逐段列出提示
+- **批量终止分级提示**：explorer 等终止后影响桌面的进程从红字警告改为黄字提示级，关键系统进程仍红字
+- **提权杀进程确认**：UAC 同意后轮询确认目标进程已退出（约 8 秒），超时提示「可能受保护」
+- **命令行输出**：`--version` / `--help` 挂到父进程控制台输出（发行 exe 无自带控制台）
+- **关于页显示真实版本号**：版本号经 ldflags 注入并透传至设置面板
+
+### 其他
+
+- 端口排除检测、更新链路、清理逻辑补单元测试
+
 ## [0.3.1] - 2026-08-12
 
 ### 新增
@@ -73,6 +94,7 @@
 - 托盘常驻：最小化到托盘、开机自启、后台轮询
 - 单文件 exe，绿色免安装
 
+[0.3.2]: https://github.com/RT-2020/winPortEye/compare/v0.3.1...v0.3.2
 [0.3.1]: https://github.com/RT-2020/winPortEye/compare/v0.3.0...v0.3.1
 [0.3.0]: https://github.com/RT-2020/winPortEye/compare/v0.2.1...v0.3.0
 [0.2.1]: https://github.com/RT-2020/winPortEye/compare/v0.2.0...v0.2.1
