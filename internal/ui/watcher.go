@@ -33,6 +33,9 @@ func startWatcher(mw *walk.MainWindow, onTick func()) {
 	}
 }
 
+// maxLogSize 日志轮转阈值：app.log 超过 1MB 时改名 app.log.old 重新开始。
+const maxLogSize = 1 << 20
+
 // setLogFile 把日志写到 %APPDATA%\PortEye\logs\app.log
 // GUI 模式不写 stderr（避免弹控制台）。
 func setLogFile() {
@@ -40,7 +43,12 @@ func setLogFile() {
 	if err := os.MkdirAll(dir, 0755); err != nil {
 		return
 	}
-	f, err := os.OpenFile(filepath.Join(dir, "app.log"),
+	logPath := filepath.Join(dir, "app.log")
+	// 轮转：已存在且超过阈值 → 改名 .old（覆盖旧 .old，失败不阻断）
+	if fi, err := os.Stat(logPath); err == nil && fi.Size() > maxLogSize {
+		_ = os.Rename(logPath, logPath+".old")
+	}
+	f, err := os.OpenFile(logPath,
 		os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0644)
 	if err != nil {
 		return

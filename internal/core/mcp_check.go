@@ -25,8 +25,11 @@ type McpCheckResult struct {
 // 通过 stdin 发送 initialize + tools/list，检查 stdout 返回。
 // 整个过程不依赖任何外部 AI 客户端，纯本地验证。
 //
+// version 为当前程序版本号（空串按 "dev"），写入 initialize 的 clientInfo，
+// 与真实客户端（主程序 --version 上报同一版本）保持口径一致。
+//
 // 自检是同步阻塞的，调用方应在 goroutine 中调用，避免卡 UI。
-func CheckMcpServer(exePath string, timeout time.Duration) McpCheckResult {
+func CheckMcpServer(exePath string, timeout time.Duration, version string) McpCheckResult {
 	start := time.Now()
 	ctx, cancel := context.WithTimeout(context.Background(), timeout)
 	defer cancel()
@@ -50,9 +53,13 @@ func CheckMcpServer(exePath string, timeout time.Duration) McpCheckResult {
 		}
 	}
 
-	// 发送 3 条 JSON-RPC 请求
+	// 发送 3 条 JSON-RPC 请求（clientInfo 版本与主程序 --version 口径一致）
+	if version == "" {
+		version = "dev"
+	}
+	clientInfo := fmt.Sprintf(`"clientInfo":{"name":"selfcheck","version":%q}`, version)
 	requests := strings.Join([]string{
-		`{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-06-18","capabilities":{},"clientInfo":{"name":"selfcheck","version":"1.0"}}}`,
+		`{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-06-18","capabilities":{},` + clientInfo + `}}`,
 		`{"jsonrpc":"2.0","method":"notifications/initialized"}`,
 		`{"jsonrpc":"2.0","id":2,"method":"tools/list","params":{}}`,
 	}, "\n") + "\n"

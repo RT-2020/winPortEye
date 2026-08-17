@@ -14,10 +14,14 @@ import (
 )
 
 // Run 启动 MCP stdio server，阻塞直到客户端断开。
+// version 为程序版本号（空串按 "dev"），随 initialize 响应上报给客户端。
 // 日志只能写 stderr（log 默认即 stderr），stdout 严格只用于 JSON-RPC。
-func Run() {
+func Run(version string) {
+	if version == "" {
+		version = "dev"
+	}
 	srv := mcp.NewServer(
-		&mcp.Implementation{Name: "porteye", Version: "v1"},
+		&mcp.Implementation{Name: "porteye", Version: version},
 		nil, // 用默认 ServerOptions
 	)
 

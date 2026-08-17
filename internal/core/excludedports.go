@@ -18,6 +18,7 @@ import (
 // 但 TCP/IP 驱动在内核层标记为"不可绑定"，应用 bind() 会被拒绝。
 type ExcludedRange struct {
 	Protocol string // "tcp" / "udp"
+	Family   string // "ipv4" / "ipv6"
 	Start    uint16 // 起始端口（含）
 	End      uint16 // 结束端口（含）
 	Managed  bool   // 是否为"管理的端口排除"（netsh 输出末尾带 *，通常为系统级）
@@ -91,40 +92,51 @@ func ClearExcludedCache() {
 }
 
 // fetchExcludedPortRanges 分别查询 TCP 和 UDP 的排除范围并合并。
-// 任一协议查询失败即整体失败（降级为不可用）。
+// ipv4 任一协议查询失败即整体失败（降级为不可用，与现状语义一致）；
+// ipv6 尽力查询，失败静默跳过（不降级、不进 error）。
 func fetchExcludedPortRanges() ([]ExcludedRange, error) {
 	var result []ExcludedRange
+	// ipv4：失败即整体失败
 	for _, proto := range []string{"tcp", "udp"} {
-		ranges, err := queryNetsh(proto)
+		ranges, err := queryNetsh("ipv4", proto)
 		if err != nil {
-			return nil, fmt.Errorf("查询 %s 排除范围失败: %w", proto, err)
+			return nil, fmt.Errorf("查询 ipv4 %s 排除范围失败: %w", proto, err)
+		}
+		result = append(result, ranges...)
+	}
+	// ipv6：尽力查询，失败静默跳过
+	for _, proto := range []string{"tcp", "udp"} {
+		ranges, err := queryNetsh("ipv6", proto)
+		if err != nil {
+			continue
 		}
 		result = append(result, ranges...)
 	}
 	return result, nil
 }
 
-// queryNetsh 跑 `netsh interface ipv4 show excludedportrange protocol=<proto>` 并解析输出。
+// queryNetsh 跑 `netsh interface <family> show excludedportrange protocol=<proto>` 并解析输出。
+// family ∈ {"ipv4", "ipv6"}。
 //
 // 健壮性设计：
 //   - HideWindow：隐藏 netsh 的控制台窗口（GUI 程序不能闪现黑窗）
 //   - 超时保护：5 秒超时，避免极端情况下永久阻塞 UI
 //   - 解析容错：parseNetshOutput 对非数据行静默跳过，不报错
-func queryNetsh(proto string) ([]ExcludedRange, error) {
+func queryNetsh(family, proto string) ([]ExcludedRange, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), netshTimeout)
 	defer cancel()
 
-	cmd := exec.CommandContext(ctx, "netsh", "interface", "ipv4", "show", "excludedportrange", "protocol="+proto)
+	cmd := exec.CommandContext(ctx, "netsh", "interface", family, "show", "excludedportrange", "protocol="+proto)
 	cmd.SysProcAttr = &syscall.SysProcAttr{HideWindow: true}
 	out, err := cmd.Output()
 	if err != nil {
 		return nil, err
 	}
-	return parseNetshOutput(string(out), proto), nil
+	return parseNetshOutput(string(out), family, proto), nil
 }
 
 // parseNetshOutput 解析 netsh 的输出文本为排除范围列表。
-// 单独抽出便于单测（不依赖真实 netsh）。
+// 单独抽出便于单测（不依赖真实 netsh）。family ∈ {"ipv4", "ipv6"}，透传到结果。
 //
 // 多语言兼容：解析策略只认"每行前两个字段都是纯数字"的行，
 // 不依赖表头文案（中文"开始端口"或英文"Start Port"都不是纯数字，自动跳过）。
@@ -141,7 +153,7 @@ func queryNetsh(proto string) ([]ExcludedRange, error) {
 //	   50000       50059     *
 //
 // 英文版表头是 "Start Port    End Port"，但同样不是纯数字，解析逻辑一致。
-func parseNetshOutput(output, proto string) []ExcludedRange {
+func parseNetshOutput(output, family, proto string) []ExcludedRange {
 	var result []ExcludedRange
 	for _, line := range strings.Split(output, "\n") {
 		line = strings.TrimSpace(line)
@@ -164,6 +176,7 @@ func parseNetshOutput(output, proto string) []ExcludedRange {
 		managed := len(fields) >= 3 && fields[len(fields)-1] == "*"
 		result = append(result, ExcludedRange{
 			Protocol: proto,
+			Family:   family,
 			Start:    uint16(start),
 			End:      uint16(end),
 			Managed:  managed,

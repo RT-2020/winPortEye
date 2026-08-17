@@ -78,13 +78,17 @@ func restoreScrollTop(tv *walk.TableView, tops []int) {
 	}
 }
 
-// 关键系统进程名（小写匹配）。批量杀时若命中，弹红字警告。
-
-// 关键系统进程名（小写匹配）。批量杀时若命中，弹红字警告。
+// 关键系统进程名（小写，不含 .exe）。批量杀时若命中，弹红字警告。
 var criticalProcessNames = map[string]bool{
 	"csrss": true, "wininit": true, "winlogon": true, "services": true,
 	"lsass": true, "smss": true, "svchost": true, "fontdrvhost": true,
-	"dwm": true, "explorer": false, // explorer 可杀但会丢任务栏，列为提示级
+	"dwm": true,
+}
+
+// cautionProcessNames 提示级进程名（小写，不含 .exe）。终止后不致命但影响桌面体验
+// （如 explorer 终止后任务栏/桌面消失），批量杀时弹黄字提示而非红字警告。
+var cautionProcessNames = map[string]bool{
+	"explorer": true,
 }
 
 // Run 启动 GUI 主窗口。阻塞直到窗口关闭。
@@ -143,15 +147,21 @@ func Run(version string) {
 				excludeHintLabel.SetVisible(false)
 				return
 			}
-			// 命中：构建具体提示文案
-			r := matched[0]
-			protoStr := "TCP/UDP"
-			if len(matched) == 1 {
-				protoStr = strings.ToUpper(r.Protocol)
+			// 命中：构建具体提示文案。协议串格式「Family 大写 + Protocol 大写」，
+			// 如 IPv4 TCP / IPv6 UDP；同端口 v4/v6 双命中是常态（排除段各自生效），
+			// 按 Family+Protocol 逐段列出，不再回退到笼统的 TCP/UDP。
+			var parts []string
+			for _, r := range matched {
+				fam := "IPv4"
+				if strings.EqualFold(r.Family, "ipv6") {
+					fam = "IPv6"
+				}
+				parts = append(parts, fmt.Sprintf("%s %s 排除段 %d-%d",
+					fam, strings.ToUpper(r.Protocol), r.Start, r.End))
 			}
-			hint := fmt.Sprintf("⚠ 端口 %d 被 Windows 内核预留（%s 排除段 %d-%d，无进程占用）。\n"+
+			hint := fmt.Sprintf("⚠ 端口 %d 被 Windows 内核预留（%s，无进程占用）。\n"+
 				"应用会无法绑定此端口。建议：换一个不在排除范围的端口，或调整排除范围。",
-				port, protoStr, r.Start, r.End)
+				port, strings.Join(parts, " / "))
 			excludeHintLabel.SetText(hint)
 			excludeHintLabel.SetVisible(true)
 
@@ -330,7 +340,7 @@ func Run(version string) {
 							}
 						},
 					},
-					PushButton{Text: "⚙ 设置", OnClicked: func() { showSettings(mw) }},
+					PushButton{Text: "⚙ 设置", OnClicked: func() { showSettings(mw, version) }},
 				},
 			},
 			// 端口排除范围提示条（搜索命中预留端口时显示，默认隐藏）
@@ -509,7 +519,36 @@ func updateDetail(label *walk.Label, tv *walk.TableView, model *ProcessGroupMode
 	label.SetText(fmt.Sprintf("PID %d  %s  %s  ·  占用 %d 个端口", g.Pid, name, g.ProcessPath, g.PortCount))
 }
 
+// classifyTargets 把待杀进程分类为危险级与提示级，返回格式化好的行文案。
+//   - PID 4 → dangerous「PID N (System)」
+//   - 进程名为空 → dangerous「PID N (未知进程)」（权限不足拿不到名，终止有风险）
+//   - criticalProcessNames 命中 → dangerous（系统关键进程，红字警告）
+//   - cautionProcessNames 命中 → caution（如 explorer，终止后影响桌面体验，提示级）
+// 匹配时剥掉 .exe 后缀（ProcessName 来自 filepath.Base，形如 "csrss.exe"）。
+func classifyTargets(targets []ProcessGroupRow) (dangerous []string, caution []string) {
+	for _, g := range targets {
+		switch {
+		case g.Pid == 4:
+			dangerous = append(dangerous, fmt.Sprintf("PID %d (System)", g.Pid))
+		case g.ProcessName == "":
+			dangerous = append(dangerous, fmt.Sprintf("PID %d (未知进程)", g.Pid))
+		default:
+			name := strings.TrimSuffix(strings.ToLower(g.ProcessName), ".exe")
+			line := fmt.Sprintf("PID %d (%s)", g.Pid, g.ProcessName)
+			switch {
+			case criticalProcessNames[name]:
+				dangerous = append(dangerous, line)
+			case cautionProcessNames[name]:
+				caution = append(caution, line)
+			}
+		}
+	}
+	return dangerous, caution
+}
+
 // killSelected 批量终止主表所有选中进程，弹确认框 + 系统进程警告，逐个杀后汇总结果。
+// 确认弹窗在 UI 线程；杀进程循环在后台 goroutine（KillProcess 提权路径最长阻塞约
+// 8 秒，不得占 UI 线程），汇总弹窗与刷新经 Synchronize 切回 UI 线程。
 func killSelected(mw *walk.MainWindow, tv *walk.TableView, model *ProcessGroupModel, reload func()) {
 	indexes := tv.SelectedIndexes()
 	if len(indexes) == 0 {
@@ -538,21 +577,8 @@ func killSelected(mw *walk.MainWindow, tv *walk.TableView, model *ProcessGroupMo
 		return
 	}
 
-	// 检测关键系统进程，构建警告信息
-	var dangerous []string
-	for _, g := range targets {
-		if g.Pid == 4 {
-			dangerous = append(dangerous, fmt.Sprintf("PID %d (System)", g.Pid))
-			continue
-		}
-		if g.ProcessName == "" {
-			dangerous = append(dangerous, fmt.Sprintf("PID %d (未知进程)", g.Pid))
-			continue
-		}
-		if criticalProcessNames[strings.ToLower(g.ProcessName)] {
-			dangerous = append(dangerous, fmt.Sprintf("PID %d (%s)", g.Pid, g.ProcessName))
-		}
-	}
+	// 分类目标进程：危险级（红字警告）+ 提示级（桌面体验提示）
+	dangerous, caution := classifyTargets(targets)
 
 	// 二次确认
 	msg := fmt.Sprintf("确定终止选中的 %d 个进程吗？\n这些进程占用的所有端口将一并释放。", len(targets))
@@ -563,35 +589,44 @@ func killSelected(mw *walk.MainWindow, tv *walk.TableView, model *ProcessGroupMo
 		}
 		msg += "请确认你知道自己在做什么。"
 	}
+	if len(caution) > 0 {
+		msg += "\n⚠ 注意：以下进程终止后影响桌面体验（如 explorer 终止后任务栏/桌面消失，可用任务管理器重启）:\n"
+		for _, c := range caution {
+			msg += "  · " + c + "\n"
+		}
+	}
 	if walk.MsgBox(mw, "确认", msg, walk.MsgBoxYesNo|walk.MsgBoxIconWarning) != walk.DlgCmdYes {
 		return
 	}
 
-	// 逐个终止
-	var okCount, failCount int
-	var failMsgs []string
-	for _, g := range targets {
-		result := core.KillProcess(g.Pid)
-		if result.Success {
-			okCount++
-		} else {
-			failCount++
-			failMsgs = append(failMsgs, fmt.Sprintf("PID %d (%s): %s", g.Pid, g.ProcessName, result.Message))
+	// 逐个终止（后台 goroutine：提权杀进程最长阻塞约 8 秒，不得占 UI 线程）
+	go func() {
+		var okCount, failCount int
+		var failMsgs []string
+		for _, g := range targets {
+			result := core.KillProcess(g.Pid)
+			if result.Success {
+				okCount++
+			} else {
+				failCount++
+				failMsgs = append(failMsgs, fmt.Sprintf("PID %d (%s): %s", g.Pid, g.ProcessName, result.Message))
+			}
 		}
-	}
 
-	// 汇总结果
-	if failCount == 0 {
-		walk.MsgBox(mw, "成功", fmt.Sprintf("已终止 %d 个进程", okCount), walk.MsgBoxIconInformation)
-	} else {
-		summary := fmt.Sprintf("成功 %d 个，失败 %d 个：\n", okCount, failCount)
-		for _, fm := range failMsgs {
-			summary += "  · " + fm + "\n"
-		}
-		walk.MsgBox(mw, "部分失败", summary, walk.MsgBoxIconWarning)
-	}
-
-	reload() // 刷新列表（增量 diff + 选中恢复）
+		// 汇总结果 + 刷新列表（切回 UI 线程）
+		mw.Synchronize(func() {
+			if failCount == 0 {
+				walk.MsgBox(mw, "成功", fmt.Sprintf("已终止 %d 个进程", okCount), walk.MsgBoxIconInformation)
+			} else {
+				summary := fmt.Sprintf("成功 %d 个，失败 %d 个：\n", okCount, failCount)
+				for _, fm := range failMsgs {
+					summary += "  · " + fm + "\n"
+				}
+				walk.MsgBox(mw, "部分失败", summary, walk.MsgBoxIconWarning)
+			}
+			reload() // 刷新列表（增量 diff + 选中恢复）
+		})
+	}()
 }
 
 // resolveRightClickSelection 计算右键按下后主表应采用的选中集合：

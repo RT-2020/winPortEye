@@ -54,12 +54,19 @@ func jsonLineWidgets(text string) []Widget {
 
 // showSettings 显示设置对话框。
 // 四个独立 Tab：MCP配置 / MCP状态 / 通用 / 关于。
-func showSettings(owner walk.Form) {
+// version 为当前程序版本号（主窗口 Run 透传），空值在关于页显示 "dev"。
+func showSettings(owner walk.Form, version string) {
 	var dlg *walk.Dialog
 	var autoStartCB *walk.CheckBox
 	var closeBtn *walk.PushButton
 	var statusLabel *walk.Label
 	var checkBtn *walk.PushButton
+
+	// version 为空（未注入 ldflags）时退化为 "dev"
+	ver := version
+	if ver == "" {
+		ver = "dev"
+	}
 
 	configText := mcpConfigJSON()
 	jsonWidgets := jsonLineWidgets(configText)
@@ -87,14 +94,16 @@ func showSettings(owner walk.Form) {
 								Composite{
 									Layout: HBox{MarginsZero: true, Spacing: 8, Margins: Margins{Left: 0, Top: 8, Right: 0, Bottom: 0}},
 									Children: []Widget{
-										PushButton{
-											Text: "复制配置",
-											OnClicked: func() {
-												if err := walk.Clipboard().SetText(configText); err == nil {
+											PushButton{
+												Text: "复制配置",
+												OnClicked: func() {
+													if err := copyConfigToClipboard(configText); err != nil {
+														walk.MsgBox(dlg, "错误", "复制失败: "+err.Error(), walk.MsgBoxIconError)
+														return
+													}
 													walk.MsgBox(dlg, "已复制", "配置已复制到剪贴板。", walk.MsgBoxIconInformation)
-												}
+												},
 											},
-										},
 										PushButton{
 											Text: "接入说明",
 											OnClicked: func() {
@@ -132,7 +141,7 @@ func showSettings(owner walk.Form) {
 									checkBtn.SetEnabled(false)
 									// 后台跑自检，避免卡 UI
 									go func() {
-										result := core.CheckMcpServer(exePath, 15*time.Second)
+										result := core.CheckMcpServer(exePath, 15*time.Second, version)
 										dlg.Synchronize(func() {
 											checkBtn.SetEnabled(true)
 											if result.OK {
@@ -184,7 +193,8 @@ func showSettings(owner walk.Form) {
 										"  • %APPDATA%\\PortEye 日志目录\n" +
 										"  • 开机自启项\n" +
 										"  • 更新下载残留文件\n" +
-										"  • 临时更新脚本\n\n" +
+										"  • 临时更新脚本\n" +
+										"  • %TEMP%\\PortEye 更新工作目录\n\n" +
 										"程序本体不会被删除。\n\n是否继续？"
 									if walk.MsgBox(dlg, "清理本机数据", msg,
 										walk.MsgBoxYesNo|walk.MsgBoxIconWarning) != walk.DlgCmdYes {
@@ -208,7 +218,7 @@ func showSettings(owner walk.Form) {
 						Title:  "关于",
 						Layout: VBox{Margins: Margins{Left: 10, Top: 10, Right: 10, Bottom: 10}, Spacing: 6},
 						Children: []Widget{
-							Label{Text: fmt.Sprintf("PortEye v1.0   (%s/%s)", runtime.GOOS, runtime.GOARCH), MinSize: Size{Height: 20}},
+							Label{Text: fmt.Sprintf("PortEye v%s   (%s/%s)", ver, runtime.GOOS, runtime.GOARCH), MinSize: Size{Height: 20}},
 							Label{Text: "PortEye · Windows 端口监控工具 · 支持 MCP", MinSize: Size{Height: 18}},
 							Label{Text: " ", MinSize: Size{Height: 6}},
 							Label{Text: "MCP 工具：", MinSize: Size{Height: 18}},
@@ -268,6 +278,14 @@ func formatCleanupResult(r core.CleanupResult) string {
 		sb.WriteString(fmt.Sprintf("✓ 临时脚本已删 %d 个\n", len(r.TempBatsRemoved)))
 	} else {
 		sb.WriteString("· 无临时脚本需清理\n")
+	}
+	switch {
+	case r.TempWorkDirRemoved:
+		sb.WriteString("✓ TEMP 更新工作目录已清理\n")
+	case r.TempWorkDirAbsent:
+		sb.WriteString("· 无 TEMP 更新工作目录残留\n")
+	default:
+		sb.WriteString("✗ TEMP 更新工作目录未清理\n")
 	}
 	if len(r.Errors) > 0 {
 		sb.WriteString("\n失败项：\n")

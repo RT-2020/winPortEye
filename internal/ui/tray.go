@@ -56,6 +56,8 @@ func setupTray(mw *walk.MainWindow, appIcon *walk.Icon, onQuit func()) (*walk.No
 		enable := actAutoStart.Checked()
 		if err := setAutoStart(enable); err != nil {
 			walk.MsgBox(mw, "错误", err.Error(), walk.MsgBoxIconError)
+			// 回滚勾选态到实际生效状态（写注册表失败后勾选态与事实脱节）
+			actAutoStart.SetChecked(isAutoStart())
 		}
 	})
 	menu.Actions().Add(actAutoStart)

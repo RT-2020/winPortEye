@@ -15,12 +15,12 @@ func TestParseNetshOutput(t *testing.T) {
 
 * - 管理的端口排除。
 `
-	ranges := parseNetshOutput(output, "tcp")
+	ranges := parseNetshOutput(output, "ipv4", "tcp")
 	want := []ExcludedRange{
-		{Protocol: "tcp", Start: 80, End: 80, Managed: false},
-		{Protocol: "tcp", Start: 1333, End: 1432, Managed: false},
-		{Protocol: "tcp", Start: 8250, End: 8349, Managed: false},
-		{Protocol: "tcp", Start: 50000, End: 50059, Managed: true},
+		{Protocol: "tcp", Family: "ipv4", Start: 80, End: 80, Managed: false},
+		{Protocol: "tcp", Family: "ipv4", Start: 1333, End: 1432, Managed: false},
+		{Protocol: "tcp", Family: "ipv4", Start: 8250, End: 8349, Managed: false},
+		{Protocol: "tcp", Family: "ipv4", Start: 50000, End: 50059, Managed: true},
 	}
 	if len(ranges) != len(want) {
 		t.Fatalf("解析数量不符: want %d, got %d (%+v)", len(want), len(ranges), ranges)
@@ -40,7 +40,7 @@ abc    def
 99999  99999
 80     80
 `
-	ranges := parseNetshOutput(output, "tcp")
+	ranges := parseNetshOutput(output, "ipv4", "tcp")
 	if len(ranges) != 1 {
 		t.Fatalf("应只解析出 1 行有效数据，got %d (%+v)", len(ranges), ranges)
 	}
@@ -50,7 +50,7 @@ abc    def
 }
 
 func TestParseNetshOutputEmpty(t *testing.T) {
-	ranges := parseNetshOutput("", "tcp")
+	ranges := parseNetshOutput("", "ipv4", "tcp")
 	if len(ranges) != 0 {
 		t.Errorf("空输入应返回空，got %+v", ranges)
 	}
@@ -68,11 +68,11 @@ Start Port    End Port
    50000       50059     *
 
 * - Administered port exclusions.`
-	ranges := parseNetshOutput(output, "tcp")
+	ranges := parseNetshOutput(output, "ipv4", "tcp")
 	want := []ExcludedRange{
-		{Protocol: "tcp", Start: 80, End: 80, Managed: false},
-		{Protocol: "tcp", Start: 8250, End: 8349, Managed: false},
-		{Protocol: "tcp", Start: 50000, End: 50059, Managed: true},
+		{Protocol: "tcp", Family: "ipv4", Start: 80, End: 80, Managed: false},
+		{Protocol: "tcp", Family: "ipv4", Start: 8250, End: 8349, Managed: false},
+		{Protocol: "tcp", Family: "ipv4", Start: 50000, End: 50059, Managed: true},
 	}
 	if len(ranges) != len(want) {
 		t.Fatalf("英文输出解析数量不符: want %d, got %d (%+v)", len(want), len(ranges), ranges)
@@ -91,7 +91,7 @@ func TestParseNetshOutputGarbled(t *testing.T) {
 ??? ???
 completely invalid
 443 444`
-	ranges := parseNetshOutput(output, "tcp")
+	ranges := parseNetshOutput(output, "ipv4", "tcp")
 	if len(ranges) != 2 {
 		t.Fatalf("应解析出 2 行有效数据（跳过乱码），got %d (%+v)", len(ranges), ranges)
 	}
@@ -100,10 +100,36 @@ completely invalid
 	}
 }
 
+// TestParseNetshOutputIPv6 验证 ipv6 的 netsh 输出同样可解析，且 Family 透传为 "ipv6"。
+func TestParseNetshOutputIPv6(t *testing.T) {
+	output := `协议 tcp 端口排除范围
+
+开始端口    结束端口
+----------    --------
+      1024        1031
+     49552       49559     *
+
+* - 管理的端口排除。
+`
+	ranges := parseNetshOutput(output, "ipv6", "tcp")
+	want := []ExcludedRange{
+		{Protocol: "tcp", Family: "ipv6", Start: 1024, End: 1031, Managed: false},
+		{Protocol: "tcp", Family: "ipv6", Start: 49552, End: 49559, Managed: true},
+	}
+	if len(ranges) != len(want) {
+		t.Fatalf("解析数量不符: want %d, got %d (%+v)", len(want), len(ranges), ranges)
+	}
+	for i, w := range want {
+		if ranges[i] != w {
+			t.Errorf("row %d: want %+v, got %+v", i, w, ranges[i])
+		}
+	}
+}
+
 func TestFindExcludedPort(t *testing.T) {
 	ranges := []ExcludedRange{
-		{Protocol: "tcp", Start: 8250, End: 8349, Managed: false},
-		{Protocol: "udp", Start: 8250, End: 8349, Managed: false},
+		{Protocol: "tcp", Family: "ipv4", Start: 8250, End: 8349, Managed: false},
+		{Protocol: "udp", Family: "ipv4", Start: 8250, End: 8349, Managed: false},
 	}
 	// 8317 落在 8250-8349 内，TCP 和 UDP 都命中
 	matched := FindExcludedPort(8317, ranges)
