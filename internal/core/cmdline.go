@@ -37,13 +37,14 @@ const (
 )
 
 // PROCESS_BASIC_INFORMATION（64 位版）：NtQueryInformationProcess(ProcessBasicInformation) 的输出。
+// 字段名对照 Windows 文档（64 位布局：Reserved1 + PebBaseAddress + Reserved2[2] +
+// UniqueProcessId + InheritedFromUniqueProcessId；现有代码只用到 PebBaseAddress）。
 type processBasicInformation64 struct {
-	Reserved1       uint64
-	PebBaseAddress  uint64
-	Reserved2       uint64
-	Reserved3       uint64
-	UniqueProcessId uint64
-	Reserved4       uint64
+	Reserved1                    uint64
+	PebBaseAddress               uint64
+	Reserved2                    [2]uint64
+	UniqueProcessId              uint64
+	InheritedFromUniqueProcessId uint64
 }
 
 // PEB（进程环境块），只取用到的字段。32 位版。

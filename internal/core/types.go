@@ -26,6 +26,7 @@ type Connection struct {
 // ProcessInfo 表示一个进程的详细信息。
 type ProcessInfo struct {
 	Pid         int32  `json:"pid"`
+	ParentPid   int32  `json:"parentPid"`   // 父进程 PID（获取失败为 0）
 	Name        string `json:"name"`        // 进程名
 	Path        string `json:"path"`        // 可执行文件完整路径
 	CommandLine string `json:"commandLine"` // 启动命令行

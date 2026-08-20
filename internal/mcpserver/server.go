@@ -1,12 +1,15 @@
-// Package mcpserver 实现基于 stdio 的 MCP server，暴露 5 个端口监控工具。
+// Package mcpserver 实现基于 stdio 的 MCP server，暴露 7 个端口监控工具。
 // 由 main.go 在 --mcp 模式下调用。
 package mcpserver
 
 import (
+	"bytes"
 	"context"
+	"encoding/csv"
 	"encoding/json"
 	"fmt"
 	"log"
+	"strconv"
 
 	"win/internal/core"
 
@@ -25,7 +28,7 @@ func Run(version string) {
 		nil, // 用默认 ServerOptions
 	)
 
-	// 5 个 tool 注册
+	// 7 个 tool 注册
 	mcp.AddTool(srv, &mcp.Tool{
 		Name:        "list_ports",
 		Description: "列出当前所有网络端口连接及其占用进程。可按协议/状态/端口号过滤。返回 Connection 数组的 JSON。",
@@ -51,6 +54,16 @@ func Run(version string) {
 		Description: "按端口号终止占用进程（先查后杀）。返回每个受影响 PID 的结果。",
 	}, killByPortHandler)
 
+	mcp.AddTool(srv, &mcp.Tool{
+		Name:        "export_ports",
+		Description: "把端口连接导出为 CSV 文本（含表头），供存档/分析/贴表格。支持协议/状态过滤。",
+	}, exportPortsHandler)
+
+	mcp.AddTool(srv, &mcp.Tool{
+		Name:        "process_tree",
+		Description: "枚举全部进程及其父 PID（含 PID、进程名、可执行文件路径），可据此构建进程树、判断杀进程的连带影响。",
+	}, processTreeHandler)
+
 	// 阻塞运行 stdio server
 	if err := srv.Run(context.Background(), &mcp.StdioTransport{}); err != nil {
 		log.Fatalf("MCP server 运行失败: %v", err)
@@ -71,13 +84,7 @@ type listPortsOutput struct {
 }
 
 func listPortsHandler(ctx context.Context, req *mcp.CallToolRequest, in listPortsInput) (*mcp.CallToolResult, listPortsOutput, error) {
-	kind := core.KindAll
-	if in.Protocol == "tcp" {
-		kind = core.KindTCP
-	} else if in.Protocol == "udp" {
-		kind = core.KindUDP
-	}
-	conns, err := core.ListConnections(kind)
+	conns, err := core.ListConnections(kindFromProtocol(in.Protocol))
 	if err != nil {
 		return nil, listPortsOutput{}, fmt.Errorf("枚举端口失败: %w", err)
 	}
@@ -112,13 +119,7 @@ func findPortHandler(ctx context.Context, req *mcp.CallToolRequest, in findPortI
 	if in.Port <= 0 {
 		return nil, findPortOutput{}, fmt.Errorf("port 参数必填且 > 0")
 	}
-	kind := core.KindAll
-	if in.Protocol == "tcp" {
-		kind = core.KindTCP
-	} else if in.Protocol == "udp" {
-		kind = core.KindUDP
-	}
-	conns, err := core.FindPort(uint16(in.Port), kind)
+	conns, err := core.FindPort(uint16(in.Port), kindFromProtocol(in.Protocol))
 	if err != nil {
 		return nil, findPortOutput{}, err
 	}
@@ -167,13 +168,7 @@ func killByPortHandler(ctx context.Context, req *mcp.CallToolRequest, in killByP
 	if in.Port <= 0 {
 		return nil, killByPortOutput{}, fmt.Errorf("port 参数必填且 > 0")
 	}
-	kind := core.KindAll
-	if in.Protocol == "tcp" {
-		kind = core.KindTCP
-	} else if in.Protocol == "udp" {
-		kind = core.KindUDP
-	}
-	results, err := core.KillByPort(uint16(in.Port), kind)
+	results, err := core.KillByPort(uint16(in.Port), kindFromProtocol(in.Protocol))
 	if err != nil {
 		return nil, killByPortOutput{}, err
 	}
@@ -182,4 +177,84 @@ func killByPortHandler(ctx context.Context, req *mcp.CallToolRequest, in killByP
 		log.Printf("kill_by_port %d 结果: %s", in.Port, string(data))
 	}
 	return nil, killByPortOutput{Results: results}, nil
+}
+
+// kindFromProtocol 把工具入参的协议串映射为 core.FilterKind。
+// ""/all → KindAll，tcp → KindTCP，udp → KindUDP；其他值按 all 处理。
+func kindFromProtocol(p string) core.FilterKind {
+	switch p {
+	case "tcp":
+		return core.KindTCP
+	case "udp":
+		return core.KindUDP
+	default:
+		return core.KindAll
+	}
+}
+
+// ExportPorts
+type exportPortsInput struct {
+	Protocol string `json:"protocol,omitempty" jsonschema:"协议过滤：tcp/udp/all（默认 all）"`
+	State    string `json:"state,omitempty" jsonschema:"状态过滤（如 LISTEN/ESTABLISHED），默认不过滤"`
+}
+type exportPortsOutput struct {
+	Csv   string `json:"csv"`   // CSV 文本（UTF-8，含表头）
+	Count int    `json:"count"` // 数据行数（不含表头）
+}
+
+func exportPortsHandler(ctx context.Context, req *mcp.CallToolRequest, in exportPortsInput) (*mcp.CallToolResult, exportPortsOutput, error) {
+	conns, err := core.ListConnections(kindFromProtocol(in.Protocol))
+	if err != nil {
+		return nil, exportPortsOutput{}, fmt.Errorf("枚举端口失败: %w", err)
+	}
+	// 状态过滤（与 listPortsHandler 同款）
+	if in.State != "" {
+		filtered := conns[:0]
+		for _, c := range conns {
+			if c.State != in.State {
+				continue
+			}
+			filtered = append(filtered, c)
+		}
+		conns = filtered
+	}
+
+	// 生成 CSV：列序固定 8 列，含逗号/引号的字段由 csv 自动转义（这也是选 CSV 的原因）。
+	var buf bytes.Buffer
+	w := csv.NewWriter(&buf)
+	w.Write([]string{"protocol", "local_addr", "local_port", "remote_addr", "state", "pid", "process_name", "process_path"})
+	for _, c := range conns {
+		w.Write([]string{
+			string(c.Protocol),
+			c.LocalAddr,
+			strconv.Itoa(int(c.LocalPort)),
+			c.RemoteAddr,
+			c.State,
+			strconv.Itoa(int(c.Pid)),
+			c.ProcessName,
+			c.ProcessPath,
+		})
+	}
+	w.Flush()
+	if err := w.Error(); err != nil {
+		return nil, exportPortsOutput{}, fmt.Errorf("生成 CSV 失败: %w", err)
+	}
+	return nil, exportPortsOutput{Csv: buf.String(), Count: len(conns)}, nil
+}
+
+// ProcessTree
+type processTreeInput struct {
+	// 无参数
+}
+type processTreeOutput struct {
+	Processes []core.ProcessInfo `json:"processes"`
+	Count     int                `json:"count"`
+}
+
+func processTreeHandler(ctx context.Context, req *mcp.CallToolRequest, in processTreeInput) (*mcp.CallToolResult, processTreeOutput, error) {
+	procs, err := core.ListProcesses()
+	if err != nil {
+		return nil, processTreeOutput{}, fmt.Errorf("枚举进程失败: %w", err)
+	}
+	return nil, processTreeOutput{Processes: procs, Count: len(procs)}, nil
 }

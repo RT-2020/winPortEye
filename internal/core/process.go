@@ -2,6 +2,7 @@ package core
 
 import (
 	"path/filepath"
+	"unsafe"
 )
 
 // GetProcessInfo 查询指定 PID 的进程详细信息。
@@ -11,18 +12,45 @@ import (
 //   - Name/Path: QueryFullProcessImageNameW
 //   - CommandLine: PEB 遍历（cmdline.go）
 //   - CreateTime: GetProcessTimes
+//   - ParentPid: NtQueryInformationProcess（尽力而为，失败保持 0）
 func GetProcessInfo(pid int32) (ProcessInfo, error) {
 	// Name/Path：原生 API（一次查询拿两个值）
 	q := newProcQueryContext()
 	name, path := q.namePath(pid)
 
-	return ProcessInfo{
+	info := ProcessInfo{
 		Pid:         pid,
 		Name:        name,
 		Path:        path,
 		CommandLine: getProcessCommandLine(pid), // PEB 遍历，权限不足返回空串
 		CreateTime:  getProcessCreateTime(pid),   // GetProcessTimes，权限不足返回 0
-	}, nil
+	}
+
+	// 父进程 PID：NtQueryInformationProcess(ProcessBasicInformation) 返回
+	// InheritedFromUniqueProcessId。尽力而为：OpenProcess 或查询失败保持 0。
+	if pid > 0 {
+		handle, _, _ := procOpenProcess.Call(
+			uintptr(processQueryInformation), // Nt 查询需要 PROCESS_QUERY_INFORMATION
+			uintptr(0),
+			uintptr(pid),
+		)
+		if handle != 0 {
+			var pbi processBasicInformation64
+			ret, _, _ := procNtQueryInformationProcess.Call(
+				uintptr(handle),
+				uintptr(processBasicInfo),
+				uintptr(unsafe.Pointer(&pbi)),
+				uintptr(unsafe.Sizeof(pbi)),
+				uintptr(0),
+			)
+			if int(ret) >= 0 { // NT_SUCCESS
+				info.ParentPid = int32(pbi.InheritedFromUniqueProcessId)
+			}
+			procCloseHandle.Call(handle)
+		}
+	}
+
+	return info, nil
 }
 
 // procInfoCache 缓存一次扫描中某 PID 的「进程名 + 完整路径」。

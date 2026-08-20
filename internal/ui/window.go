@@ -217,10 +217,12 @@ func Run(version string) {
 	// 防抖关键（实测验证后的结论）：
 	//   - 真实环境 3 秒内 PID 保留率约 98%，model 的 diff 几乎只发 RowChanged，
 	//     walk 虚拟模式下选中/焦点/滚动自动保留，【无需任何额外操作】。
-	//   - 只有当选中的 PID 真的消失（进程退出/被杀）时，才需要 SetSelectedIndexes
-	//     清理失效选中。绝不在 PID 全部保留时调 SetSelectedIndexes——它会先清空全部
-	//     item 的选中态再重设（LVM_SETITEMSTATE ^0），导致整表闪烁 + 焦点丢失。
-	//   - 绝不调 SetCurrentIndex——它触发 LVM_ENSUREVISIBLE 强制滚动。
+	//   - 需要校正的只有两类情形：选中 PID 消失（进程退出/被杀）、以及非 PID 排序
+	//     （按端口数/路径等）下行序随内容变化导致选中/焦点错挂到别的 PID。
+	//   - 绝不在集合未变时调 SetSelectedIndexes——它会先清空全部 item 的选中态再重设
+	//     （LVM_SETITEMSTATE ^0），导致整表闪烁 + 焦点丢失；SetCurrentIndex 会触发
+	//     LVM_ENSUREVISIBLE 强制滚动，故焦点校正必须放在 restoreScrollTop 之前，
+	//     由随后的滚动恢复抵消其副作用。
 	// 所有刷新路径（首次加载/刷新按钮/watcher/kill后）都走这个闭包。
 	reload := func() {
 		conns, err := core.ListConnections(core.KindAll)
@@ -244,6 +246,15 @@ func Run(version string) {
 			}
 		}
 
+		// 额外记录焦点行 PID：walk 的 insert/remove 补偿按行号移动 currentIndex，
+		// 非 PID 排序下行序变化会把它错挂到别的 PID，SetRaw 后需按 PID 重映射。
+		curPid := int32(0)
+		if masterTV != nil {
+			if g, ok := groupModel.At(masterTV.CurrentIndex()); ok {
+				curPid = g.Pid
+			}
+		}
+
 		// 保存滚动位置：walk 的 RowsInserted/Removed handler 在 from<=currentIndex 时
 		// 会调 SetCurrentIndex → LVM_ENSUREVISIBLE 强制滚动，导致用户滚到一半被拉回。
 		// SetRaw 前记下顶项索引，SetRaw 后用 LVM_SCROLL 滚回原位。
@@ -254,31 +265,38 @@ func Run(version string) {
 
 		groupModel.SetRaw(conns) // 内部聚合 + diff + 细粒度发布
 
+		// 焦点校正：walk 的 insert/remove 补偿按行号移动 currentIndex，
+		// 非 PID 排序下行序变化会把它错挂到别的 PID，按 PID 重映射修正。
+		// 必须在此位置：SetCurrentIndex 触发 EnsureVisible 滚动，需被随后的
+		// restoreScrollTop 抵消。
+		if masterTV != nil && curPid > 0 {
+			if g, ok := groupModel.At(masterTV.CurrentIndex()); !ok || g.Pid != curPid {
+				if idx := groupModel.IndexOfPid(curPid); idx >= 0 {
+					masterTV.SetCurrentIndex(idx)
+				}
+			}
+		}
+
 		// 恢复滚动位置（抵消 walk handler 强制的 EnsureVisible）
 		if masterTV != nil && savedTop != nil {
 			restoreScrollTop(masterTV, savedTop)
 		}
 
-		// 只有当选中 PID 有消失时，才需要清理失效选中。
-		// PID 全部保留时绝不调 SetSelectedIndexes——那会清空整表选中态导致闪烁。
+		// 选中校正：与当前选中集合不同才重设（相同则跳过，避免 LVM_SETITEMSTATE ^0 闪烁）。
+		// 覆盖三种情况：非 PID 排序行序变化导致选中位偏移、walk 补偿清掉多选、选中 PID 消失。
 		if masterTV != nil && len(prevPids) > 0 {
 			newIdxs := make([]int, 0, len(prevPids))
-			lost := false
 			for _, pid := range prevPids {
-				idx := groupModel.IndexOfPid(pid)
-				if idx >= 0 {
+				if idx := groupModel.IndexOfPid(pid); idx >= 0 {
 					newIdxs = append(newIdxs, idx)
-				} else {
-					lost = true // 有选中 PID 消失了
 				}
 			}
-			if lost {
-				// 只有真的丢了选中项才重设（清理失效的）
-				if len(newIdxs) > 0 {
+			if len(newIdxs) > 0 {
+				cur := masterTV.SelectedIndexes()
+				if !intsEqual(cur, newIdxs) {
 					masterTV.SetSelectedIndexes(newIdxs)
 				}
 			}
-			// lost==false：所有选中 PID 都还在，walk 虚拟模式已自动保留选中，什么都不做
 		}
 		refreshDetail()
 		updateKillBtn()
