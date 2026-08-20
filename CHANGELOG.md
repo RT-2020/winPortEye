@@ -4,6 +4,22 @@
 
 格式基于 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)，版本号遵循[语义化版本](https://semver.org/lang/zh-CN/)。
 
+## [0.3.3] - 2026-08-20
+
+### 新增
+
+- **MCP 新增两个工具**（5 → 7）：`export_ports` 把端口连接导出为 CSV 文本（支持协议/状态过滤，AI 可直接存档或分析）；`process_tree` 枚举全部进程的 PID/父 PID/名称/路径，可构建进程树、评估杀进程的连带影响
+- **进程信息补充父进程 PID**：`ProcessInfo` 新增 `ParentPid` 字段（NtQueryInformationProcess 尽力填充，失败为 0），`get_process` 输出同步包含
+
+### 修复
+
+- **非 PID 排序时刷新选中位偏移**：按端口数/路径等列排序后，后台刷新可能把焦点/选中错挂到别的进程。刷新后焦点与选中集合改为按 PID 重映射回新行号（集合未变时跳过，不引入闪烁）
+- **NTSTATUS 成功判定误判**：`int(ret) >= 0` 在 64 位下把失败码（如 0xC000010A）误判为成功，统一改 `int32(ret) >= 0`（此前失败时字段落 0，无实际危害）
+
+### 其他
+
+- MCP 新增 `export_ports`（CSV 格式与过滤）与 `process_tree`（含当前进程、PID 唯一性）单元测试
+
 ## [0.3.2] - 2026-08-17
 
 ### 修复
@@ -94,6 +110,7 @@
 - 托盘常驻：最小化到托盘、开机自启、后台轮询
 - 单文件 exe，绿色免安装
 
+[0.3.3]: https://github.com/RT-2020/winPortEye/compare/v0.3.2...v0.3.3
 [0.3.2]: https://github.com/RT-2020/winPortEye/compare/v0.3.1...v0.3.2
 [0.3.1]: https://github.com/RT-2020/winPortEye/compare/v0.3.0...v0.3.1
 [0.3.0]: https://github.com/RT-2020/winPortEye/compare/v0.2.1...v0.3.0
