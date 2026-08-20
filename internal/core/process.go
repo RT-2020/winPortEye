@@ -43,7 +43,7 @@ func GetProcessInfo(pid int32) (ProcessInfo, error) {
 				uintptr(unsafe.Sizeof(pbi)),
 				uintptr(0),
 			)
-			if int(ret) >= 0 { // NT_SUCCESS
+			if int32(ret) >= 0 { // NT_SUCCESS
 				info.ParentPid = int32(pbi.InheritedFromUniqueProcessId)
 			}
 			procCloseHandle.Call(handle)

@@ -158,8 +158,8 @@ func isTargetProcess32Bit(handle syscall.Handle) bool {
 		uintptr(unsafe.Sizeof(wow64)),
 		uintptr(0),
 	)
-	// NT_SUCCESS(ret) 即 ret >= 0
-	if int(ret) >= 0 && wow64 != 0 {
+	// NT_SUCCESS(ret) 即 int32(ret) >= 0（int32 截断保留位模式，失败码为负）
+	if int32(ret) >= 0 && wow64 != 0 {
 		return true
 	}
 	return false
@@ -177,7 +177,7 @@ func queryPebAddress(handle syscall.Handle, is32BitTarget bool) (uint64, bool) {
 			uintptr(unsafe.Sizeof(wow64)),
 			uintptr(0),
 		)
-		if int(ret) >= 0 && wow64 != 0 {
+		if int32(ret) >= 0 && wow64 != 0 {
 			return uint64(wow64), true
 		}
 		return 0, false
@@ -191,7 +191,7 @@ func queryPebAddress(handle syscall.Handle, is32BitTarget bool) (uint64, bool) {
 		uintptr(unsafe.Sizeof(info)),
 		uintptr(0),
 	)
-	if int(ret) >= 0 && info.PebBaseAddress != 0 {
+	if int32(ret) >= 0 && info.PebBaseAddress != 0 {
 		return info.PebBaseAddress, true
 	}
 	return 0, false
@@ -253,7 +253,7 @@ func readMemory(handle syscall.Handle, address uint64, size uint) []byte {
 		uintptr(size),
 		uintptr(unsafe.Pointer(&read)),
 	)
-	if int(ret) >= 0 && read > 0 {
+	if int32(ret) >= 0 && read > 0 {
 		return buffer[:read]
 	}
 	return nil
